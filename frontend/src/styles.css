@@ -1,0 +1,148 @@
+:root {
+  --bg: #f7f6f2;
+  --ink: #222522;
+  --muted: #66706a;
+  --line: #d9d7cf;
+  --panel: #ffffff;
+  --accent: #176d6b;
+  --pay: #9c2f2f;
+  --receive: #14633a;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.app-nav {
+  min-height: 64px;
+}
+
+.brand {
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.page-shell {
+  padding-bottom: 48px;
+  padding-top: 28px;
+}
+
+.page-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.page-heading h1 {
+  font-size: 30px;
+  font-weight: 800;
+  margin: 0;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.toolbar {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.toolbar .form-group,
+.toolbar > div {
+  min-width: 170px;
+}
+
+.toolbar .grow {
+  flex: 1 1 260px;
+}
+
+.form-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.table {
+  --bs-table-bg: #ffffff;
+}
+
+.nav-tabs .nav-link {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.nav-tabs .nav-link.active {
+  color: var(--accent);
+}
+
+.money-input {
+  max-width: 130px;
+}
+
+.status-text {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+h2 {
+  font-size: 18px;
+  font-weight: 800;
+  margin: 0 0 12px;
+}
+
+.ledger-table th {
+  background: #f1f0eb;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ledger-table td {
+  font-size: 14px;
+  min-width: 120px;
+}
+
+.ledger-table td:nth-child(3) {
+  min-width: 320px;
+}
+
+.payment-chip {
+  display: inline-block;
+  margin-right: 12px;
+  white-space: nowrap;
+}
+
+.locked-row {
+  color: var(--muted);
+}
+
+.pay {
+  color: var(--pay) !important;
+  font-weight: 800;
+}
+
+.receive {
+  color: var(--receive) !important;
+  font-weight: 800;
+}
+
+@media (max-width: 760px) {
+  .panel {
+    padding: 12px;
+  }
+
+  .ledger-table td:nth-child(3) {
+    min-width: 240px;
+  }
+}

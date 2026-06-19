@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}Roommate Preferences | Choremarket{% endblock %}
+
+{% block content %}
+<section class="section">
+  <div class="section-heading">
+    <h1>Roommate Preferences</h1>
+    <p>Weekly willingness to pay and bids</p>
+  </div>
+
+  {% if not roommates %}
+    <p class="empty panel">Add roommates before entering preferences.</p>
+  {% else %}
+  <form class="toolbar" action="/preferences" method="get">
+    <label>
+      <span>Roommate</span>
+      <select name="roommate_id">
+        {% for roommate in roommates %}
+          <option value="{{ roommate.id }}" {% if roommate.id == selected_roommate %}selected{% endif %}>{{ roommate.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      <span>Week</span>
+      <input name="week_start" type="date" value="{{ selected_week }}">
+    </label>
+    <button class="secondary" type="submit">View</button>
+    <button class="secondary" type="submit" name="advance_week" value="true">Next Week</button>
+  </form>
+
+  <form action="/preferences" method="post" class="panel">
+    <input type="hidden" name="roommate_id" value="{{ selected_roommate }}">
+    <div class="inline-fields">
+      <label>
+        <span>Week Start</span>
+        <input name="week_start" type="date" value="{{ selected_week }}">
+      </label>
+      <button type="submit">Save Preferences</button>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Task</th>
+            <th>Frequency</th>
+            <th>Willingness to Pay</th>
+            <th>Bid</th>
+            <th>Source Week</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for chore in chores %}
+          {% set pref = effective[chore.id][selected_roommate] %}
+          <tr>
+            <td>{{ chore.name }}</td>
+            <td>{{ chore.frequency }}</td>
+            <td>
+              <input class="money" name="wtp_{{ chore.id }}" type="number" step="0.01" min="0" value="{{ '%.2f' | format(pref.wtp_cents / 100) }}">
+            </td>
+            <td>
+              <input class="money" name="bid_{{ chore.id }}" type="number" step="0.01" min="0" value="{{ '%.2f' | format(pref.bid_cents / 100) }}">
+            </td>
+            <td>{{ pref.source_week or "Default" }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="5" class="empty">No chores yet.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </form>
+
+  <section class="subsection">
+    <h2>History</h2>
+    {% for row in history %}
+      <div class="history-block">
+        <h3>{{ row.week_start }}</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Task</th>
+                <th>WTP</th>
+                <th>Bid</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for pref in row.preferences %}
+              <tr>
+                <td>{{ pref.chore_name }}</td>
+                <td>{{ cents(pref.wtp_cents) }}</td>
+                <td>{{ cents(pref.bid_cents) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% else %}
+      <p class="empty">No saved preference weeks for this roommate.</p>
+    {% endfor %}
+  </section>
+  {% endif %}
+</section>
+{% endblock %}

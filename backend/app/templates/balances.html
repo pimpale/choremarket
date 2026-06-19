@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block title %}Overall Balances | Choremarket{% endblock %}
+
+{% block content %}
+<section class="section">
+  <div class="section-heading">
+    <h1>Overall Balances</h1>
+    <p>Net amounts across recorded weeks</p>
+  </div>
+
+  <div class="split">
+    <section class="panel">
+      <h2>Net Ledger</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Roommate</th>
+              <th>Net</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in nets %}
+            <tr>
+              <td>{{ row.name }}</td>
+              <td class="{% if row.net_cents < 0 %}receive{% elif row.net_cents > 0 %}pay{% endif %}">
+                {{ cents(row.net_cents) }}
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="2" class="empty">No roommates yet.</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Settle Up</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>From</th>
+              <th>To</th>
+              <th>Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for settlement in settlements %}
+            <tr>
+              <td>{{ settlement.from }}</td>
+              <td>{{ settlement.to }}</td>
+              <td>{{ cents(settlement.amount_cents) }}</td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="3" class="empty">No recorded balances to settle.</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <section class="subsection">
+    <h2>Recorded Weeks</h2>
+    <div class="week-list">
+      {% for week in saved_weeks %}
+        <a href="/ledger?week_start={{ week.week_start }}">{{ week.week_start }}</a>
+      {% else %}
+        <span class="empty">No recorded weeks yet.</span>
+      {% endfor %}
+    </div>
+  </section>
+</section>
+{% endblock %}

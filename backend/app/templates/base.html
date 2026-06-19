@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Choremarket{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/chores">Choremarket</a>
+      <nav class="nav">
+        <a href="/admin">Admin</a>
+        <a href="/balances">Overall Balances</a>
+        <a href="/chores">Chore List</a>
+        <a href="/preferences">Roommate Preferences</a>
+        <a href="/ledger">Ledger</a>
+      </nav>
+    </header>
+    <main class="page">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>
