@@ -16,7 +16,6 @@ class Roommate:
 class Chore:
     id: int
     name: str
-    frequency: str
 
 
 @dataclass(frozen=True)
@@ -25,7 +24,7 @@ class Preference:
     chore_id: int
     wtp_cents: int
     bid_cents: int
-    source_week: str | None
+    source_week: str | None = None
 
 
 @dataclass(frozen=True)
@@ -38,20 +37,63 @@ class ChoreLedger:
     notes: str
 
 
-def monday_for(day: date) -> date:
-    return day - timedelta(days=day.weekday())
+def week_start_for(day: date) -> date:
+    """Return the Sunday on or before ``day`` (weeks run Sunday -> Saturday)."""
+    # date.weekday(): Mon=0 .. Sun=6. Days since the most recent Sunday:
+    return day - timedelta(days=(day.weekday() + 1) % 7)
+
+
+def due_date_for(week_start: date) -> date:
+    """Return the Saturday that closes the Sunday-starting ``week_start`` week."""
+    return week_start + timedelta(days=6)
+
+
+def current_week(day: date | None = None) -> date:
+    return week_start_for(day or date.today())
 
 
 def upcoming_week(day: date | None = None) -> date:
-    today = day or date.today()
-    return monday_for(today) + timedelta(days=7)
+    return current_week(day) + timedelta(days=7)
+
+
+def flat_payout_payments(
+    assignee_id: int,
+    roommate_ids: Iterable[int],
+    payout_cents: int,
+) -> dict[int, int]:
+    """Balanced transfer for a directly-entered (one-off) chore.
+
+    The assignee receives ``payout_cents``; everyone else splits the cost so the
+    payments sum to exactly zero. Positive amounts pay, negative amounts receive.
+    """
+    ids = list(roommate_ids)
+    payments = {rid: 0 for rid in ids}
+    if assignee_id not in payments:
+        payments[assignee_id] = 0
+
+    others = [rid for rid in payments if rid != assignee_id]
+    if not others or payout_cents == 0:
+        return payments
+
+    base = payout_cents // len(others)
+    remainder = payout_cents - base * len(others)
+    for index, rid in enumerate(sorted(others)):
+        payments[rid] = base + (1 if index < remainder else 0)
+    payments[assignee_id] = -sum(payments[rid] for rid in others)
+    return payments
 
 
 def compute_chore_ledger(
     chore: Chore,
     roommates: Iterable[Roommate],
     preferences: dict[int, Preference],
+    forced_assignee_id: int | None = None,
 ) -> ChoreLedger:
+    """Assign a chore and compute the balanced AGV transfer.
+
+    ``forced_assignee_id`` overrides the auto-pick (lowest bidder) so the ledger
+    can be hand-edited while keeping the transfer math consistent.
+    """
     people = list(roommates)
     if not people:
         return ChoreLedger(
@@ -74,7 +116,8 @@ def compute_chore_ledger(
             notes="Single-roommate week; no transfer needed.",
         )
 
-    assignee = min(
+    forced = next((p for p in people if p.id == forced_assignee_id), None)
+    assignee = forced or min(
         people,
         key=lambda roommate: (
             preferences[roommate.id].bid_cents,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 
 from .db import connect
 from .mechanism import (
@@ -10,61 +10,31 @@ from .mechanism import (
     Preference,
     Roommate,
     compute_chore_ledger,
+    current_week,
+    due_date_for,
+    flat_payout_payments,
+    upcoming_week,
 )
 
 
-ALLOWED_FREQUENCIES = {"monthly", "weekly", "one-off"}
+VALID_STATUSES = {"pending", "done", "failed"}
 EXAMPLE_ROOMMATES = ("Alex", "Blair", "Casey")
-SHEET_ROOMMATES = ("Matthew", "Govind", "Blaine", "Emerson", "Nathan")
-SHEET_LEDGER_ROWS = [
-    ("2026-04-25", "Matthew", "Find cleaning person", "Once", "end of week", 2000),
-    ("2026-04-25", "Matthew", "Monday Trash", "weekly", "end of week", 300),
-    ("2026-04-25", "Matthew", "Thursday Trash+Recycle", "weekly", "end of week", 300),
-    ("2026-04-25", "Matthew", "Putting away the dishes", "as needed (pay per week)", "end of week", 800),
-    ("2026-04-25", "Matthew", "Clean the kitchen sink", "every 3 weeks", "end of week", 300),
-    ("2026-04-25", "Matthew", "Clean the microwave", "every 3 weeks", "end of week", 300),
-    ("2026-04-25", "Matthew", "Clean the kitchen surfaces (counters, stove, dining table)", "2/week", "end of week", 700),
-    ("2026-04-27", "Govind", "Vacuum/sweep downstairs", "weekly", "end of week", 1300),
-    ("2026-04-25", "Govind", "Call verizon about wifi", "once", "FAIL", 0),
-    ("2026-05-02", "Matthew", "Monday Trash; Thursday Trash+Recycle", "weekly", "end of week", 1200),
-    ("2026-05-02", "Blaine", "Putting away the dishes", "as needed (pay per week)", "end of week", 1600),
-    ("2026-05-02", "Matthew", "Clean the kitchen surfaces (counters, stove, dining table)", "2/week", "end of week", 1000),
-    ("2026-05-02", "Govind", "Vacuum/sweep downstairs and stairs", "weekly", "end of week", 1300),
-    ("2026-05-11", "Matthew", "Monday Trash; Thursday Trash+Recycle", "weekly", "end of week", 1200),
-    ("2026-05-11", "Matthew", "Putting away the dishes", "as needed (pay per week)", "end of week", 1300),
-    ("2026-05-11", "Matthew", "Clean the kitchen surfaces (counters, stove, dining table)", "2/week", "end of week", 1000),
-    ("2026-05-11", "Govind", "Vacuum/sweep downstairs and stairs", "weekly", "end of week", 1300),
-    ("2026-04-25", "Emerson", "Buy and install TV on Stand", "once", "end of week", 2000),
-    ("2026-05-18", "Matthew", "Monday Trash; Thursday Trash+Recycle", "weekly", "end of week", 1300),
-    ("2026-05-18", "Matthew", "Putting away the dishes", "as needed (pay per week)", "end of week", 1500),
-    ("2026-05-18", "Matthew", "Clean the kitchen surfaces (counters, stove, dining table)", "2/week", "end of week", 1200),
-    ("2026-05-18", "Govind", "Vacuum/sweep downstairs and stairs", "weekly", "end of week", 1300),
-    ("2026-05-23", "Matthew", "Monday Trash; Thursday Trash+Recycle", "weekly", "end of week", 1300),
-    ("2026-05-23", "Blaine", "Putting away the dishes", "as needed (pay per week)", "end of week", 1400),
-    ("2026-05-23", "Matthew", "Clean the kitchen surfaces (counters, stove, dining table)", "2/week", "end of week", 1200),
-    ("2026-05-23", "Govind", "Vacuum/sweep downstairs and stairs", "weekly", "end of week", 1300),
-    ("2026-05-23", "Matthew", "Clean downstairs bathroom (wipe shower, toilet, counter, clean floor, unclog drain, broadly make bathroom look good)", "every 2 weeks", "end of week", 1100),
-    ("2026-05-23", "Matthew", "Clean 2nd floor bathroom (wipe shower, toilet, counter, clean floor, unclog drain, broadly make bathroom look good)", "every 2 weeks", "end of week", 1800),
-    ("2026-05-23", "Matthew", "Clean Emerson bathroom (wipe shower, toilet, counter, clean floor, unclog drain, broadly make bathroom look good)", "every 2 weeks", "end of week", 2200),
-    ("2026-05-23", "Govind", "Call verizon about wifi", "once", "end of week", 0),
-    ("2026-05-30", "Matthew", "Monday Trash; Thursday Trash+Recycle", "weekly", "end of week", 1300),
-    ("2026-05-30", "Blaine", "Putting away the dishes", "as needed (pay per week)", "end of week", 1400),
-    ("2026-05-30", "Matthew", "Clean the kitchen surfaces (counters, stove, dining table)", "2/week", "end of week", 1200),
-    ("2026-05-30", "Govind", "Vacuum/sweep downstairs and stairs", "weekly", "end of week", 1300),
-    ("2026-05-30", "Matthew", "Coordinate pressure washing and bush trimming", "once", "something scheduled by end of week. Everything cleaned in 5 weeks", 2500),
-    ("2026-05-30", "Matthew", "Clean microwave", "once", "end of week", 600),
-    ("2026-05-30", "Govind", "Putting away the dishes", "as needed (pay per week)", "end of week", 1100),
-    ("2026-06-06", "Matthew", "Spend 15 mins figuring out dishwasher sucking butt", "once", "end of week", 1500),
-    ("2026-06-06", "Matthew", "Monday Trash; Thursday Trash+Recycle", "weekly", "end of week", 1300),
-    ("2026-06-06", "Govind", "Putting away the dishes", "as needed (pay per week)", "end of week", 1300),
-    ("2026-06-06", "Matthew", "Clean the kitchen surfaces (counters, stove, dining table)", "1/week", "end of week", 600),
-    ("2026-06-13", "Nathan", "Monday Trash; Thursday Trash+Recycle", "weekly", "end of week", 1900),
-    ("2026-06-13", "Govind", "Putting away the dishes", "as needed (pay per week)", "end of week", 1300),
-    ("2026-06-13", "Nathan", "Clean the kitchen surfaces (counters, stove, dining table)", "weekly", "end of week", 700),
-    ("2026-06-13", "Nathan", "Vacuum/sweep downstairs and stairs", "weekly", "end of week", 1100),
+
+MOCK_ROOMMATES = ("Matthew", "Govind", "Blaine", "Emerson", "Nathan")
+MOCK_RECURRING_CHORES = [
+    ("Monday Trash", "Take out Monday trash"),
+    ("Thursday Trash + Recycle", "Take out Thursday trash and recycling"),
+    ("Putting away dishes", "Empty and reload the dishwasher as needed"),
+    ("Kitchen surfaces", "Wipe counters, stove, and dining table"),
+    ("Vacuum/sweep downstairs", "Vacuum and sweep downstairs and the stairs"),
+    ("Clean kitchen sink", "Scrub and clean the kitchen sink"),
+    ("Clean microwave", "Wipe down the microwave inside and out"),
 ]
 
 
+# --------------------------------------------------------------------------- #
+# Roommates
+# --------------------------------------------------------------------------- #
 def active_roommates() -> list[sqlite3.Row]:
     with connect() as conn:
         return conn.execute(
@@ -76,13 +46,6 @@ def all_roommates() -> list[sqlite3.Row]:
     with connect() as conn:
         return conn.execute(
             "SELECT * FROM roommates ORDER BY active DESC, name"
-        ).fetchall()
-
-
-def active_chores() -> list[sqlite3.Row]:
-    with connect() as conn:
-        return conn.execute(
-            "SELECT * FROM chores WHERE active = 1 ORDER BY name"
         ).fetchall()
 
 
@@ -103,18 +66,8 @@ def add_roommate(name: str) -> None:
 
 
 def add_example_roommates() -> None:
-    with connect() as conn:
-        for name in EXAMPLE_ROOMMATES:
-            existing = conn.execute(
-                "SELECT id FROM roommates WHERE name = ?", (name,)
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    "UPDATE roommates SET active = 1 WHERE id = ?",
-                    (existing["id"],),
-                )
-            else:
-                conn.execute("INSERT INTO roommates (name) VALUES (?)", (name,))
+    for name in EXAMPLE_ROOMMATES:
+        add_roommate(name)
 
 
 def remove_roommate(roommate_id: int) -> None:
@@ -122,452 +75,594 @@ def remove_roommate(roommate_id: int) -> None:
         conn.execute("UPDATE roommates SET active = 0 WHERE id = ?", (roommate_id,))
 
 
-def add_chore(name: str, frequency: str, description: str) -> None:
+# --------------------------------------------------------------------------- #
+# Recurring chores (templates)
+# --------------------------------------------------------------------------- #
+def active_recurring_chores() -> list[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM recurring_chores WHERE active = 1 ORDER BY name"
+        ).fetchall()
+
+
+def add_recurring_chore(name: str, description: str) -> None:
     clean_name = name.strip()
-    clean_frequency = normalize_frequency(frequency)
     clean_description = description.strip()
     if not clean_name:
         return
     with connect() as conn:
         existing = conn.execute(
-            "SELECT id FROM chores WHERE name = ?", (clean_name,)
+            "SELECT id FROM recurring_chores WHERE name = ?", (clean_name,)
         ).fetchone()
         if existing:
             conn.execute(
-                """
-                UPDATE chores
-                SET frequency = ?, description = ?, active = 1
-                WHERE id = ?
-                """,
-                (clean_frequency, clean_description, existing["id"]),
+                "UPDATE recurring_chores SET description = ?, active = 1 WHERE id = ?",
+                (clean_description, existing["id"]),
             )
         else:
             conn.execute(
-                """
-                INSERT INTO chores (name, frequency, description)
-                VALUES (?, ?, ?)
-                """,
-                (clean_name, clean_frequency, clean_description),
+                "INSERT INTO recurring_chores (name, description) VALUES (?, ?)",
+                (clean_name, clean_description),
             )
 
 
-def update_chore(
-    chore_id: int,
-    name: str,
-    frequency: str,
-    description: str,
-) -> None:
+def update_recurring_chore(chore_id: int, name: str, description: str) -> None:
     clean_name = name.strip()
-    clean_frequency = normalize_frequency(frequency)
     clean_description = description.strip()
     if not clean_name:
         return
-
     with connect() as conn:
         duplicate = conn.execute(
-            "SELECT id FROM chores WHERE name = ? AND id != ?",
+            "SELECT id FROM recurring_chores WHERE name = ? AND id != ?",
             (clean_name, chore_id),
         ).fetchone()
         if duplicate:
             return
-
         conn.execute(
-            """
-            UPDATE chores
-            SET name = ?, frequency = ?, description = ?, active = 1
-            WHERE id = ?
-            """,
-            (clean_name, clean_frequency, clean_description, chore_id),
+            "UPDATE recurring_chores SET name = ?, description = ?, active = 1 WHERE id = ?",
+            (clean_name, clean_description, chore_id),
         )
 
 
-def remove_chore(chore_id: int) -> None:
+def remove_recurring_chore(chore_id: int) -> None:
     with connect() as conn:
-        conn.execute("UPDATE chores SET active = 0 WHERE id = ?", (chore_id,))
+        conn.execute(
+            "UPDATE recurring_chores SET active = 0 WHERE id = ?", (chore_id,)
+        )
 
 
-def normalize_frequency(frequency: str) -> str:
-    clean = frequency.strip().lower() if frequency else "one-off"
-    return clean if clean in ALLOWED_FREQUENCIES else "one-off"
-
-
-def save_preferences(
+# --------------------------------------------------------------------------- #
+# Preferences (keyed by recurring chore, week-independent)
+# --------------------------------------------------------------------------- #
+def save_preference(
     roommate_id: int,
-    week_start: str,
-    values: dict[int, tuple[int, int]],
+    recurring_chore_id: int,
+    wtp_cents: int,
+    bid_cents: int,
 ) -> None:
     with connect() as conn:
-        for chore_id, (wtp_cents, bid_cents) in values.items():
-            conn.execute(
-                """
-                INSERT INTO preferences
-                    (roommate_id, chore_id, week_start, wtp_cents, bid_cents)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(roommate_id, chore_id, week_start)
-                DO UPDATE SET
-                    wtp_cents = excluded.wtp_cents,
-                    bid_cents = excluded.bid_cents,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (roommate_id, chore_id, week_start, wtp_cents, bid_cents),
-            )
+        conn.execute(
+            """
+            INSERT INTO chore_preferences
+                (roommate_id, recurring_chore_id, wtp_cents, bid_cents)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(roommate_id, recurring_chore_id)
+            DO UPDATE SET
+                wtp_cents = excluded.wtp_cents,
+                bid_cents = excluded.bid_cents,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (roommate_id, recurring_chore_id, wtp_cents, bid_cents),
+        )
 
 
-def effective_preferences_for_week(week_start: str) -> dict[int, dict[int, Preference]]:
+def preferences_grid() -> dict[int, dict[int, Preference]]:
+    """preferences[roommate_id][recurring_chore_id] for active roommates/chores."""
     roommates = active_roommates()
-    chores = active_chores()
-    preference_map: dict[int, dict[int, Preference]] = {}
-
+    chores = active_recurring_chores()
+    grid: dict[int, dict[int, Preference]] = {}
     with connect() as conn:
-        for chore in chores:
-            preference_map[chore["id"]] = {}
-            for roommate in roommates:
+        for roommate in roommates:
+            grid[roommate["id"]] = {}
+            for chore in chores:
                 row = conn.execute(
                     """
-                    SELECT *
-                    FROM preferences
-                    WHERE roommate_id = ?
-                      AND chore_id = ?
-                      AND week_start <= ?
-                    ORDER BY week_start DESC
-                    LIMIT 1
+                    SELECT wtp_cents, bid_cents
+                    FROM chore_preferences
+                    WHERE roommate_id = ? AND recurring_chore_id = ?
                     """,
-                    (roommate["id"], chore["id"], week_start),
+                    (roommate["id"], chore["id"]),
                 ).fetchone()
-                preference_map[chore["id"]][roommate["id"]] = Preference(
+                grid[roommate["id"]][chore["id"]] = Preference(
                     roommate_id=roommate["id"],
                     chore_id=chore["id"],
                     wtp_cents=row["wtp_cents"] if row else 0,
                     bid_cents=row["bid_cents"] if row else 0,
-                    source_week=row["week_start"] if row else None,
                 )
+    return grid
 
-    return preference_map
+
+def _preference_map(
+    conn: sqlite3.Connection,
+    recurring_chore_id: int,
+    roommates: list[Roommate],
+) -> dict[int, Preference]:
+    out: dict[int, Preference] = {}
+    for roommate in roommates:
+        row = conn.execute(
+            """
+            SELECT wtp_cents, bid_cents
+            FROM chore_preferences
+            WHERE roommate_id = ? AND recurring_chore_id = ?
+            """,
+            (roommate.id, recurring_chore_id),
+        ).fetchone()
+        out[roommate.id] = Preference(
+            roommate_id=roommate.id,
+            chore_id=recurring_chore_id,
+            wtp_cents=row["wtp_cents"] if row else 0,
+            bid_cents=row["bid_cents"] if row else 0,
+        )
+    return out
 
 
-def roommate_history(roommate_id: int) -> list[dict[str, object]]:
+# --------------------------------------------------------------------------- #
+# Instances (the ledger rows) + spawning
+# --------------------------------------------------------------------------- #
+def _insert_instance(
+    conn: sqlite3.Connection,
+    recurring_chore_id: int | None,
+    name: str,
+    description: str,
+    week_start: str,
+    due_date: str,
+    assignee_id: int | None,
+    status: str,
+    surplus_cents: int,
+    notes: str,
+    payments: dict[int, int],
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO chore_instances
+            (recurring_chore_id, name, description, week_start, due_date,
+             assignee_id, status, surplus_cents, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            recurring_chore_id,
+            name,
+            description,
+            week_start,
+            due_date,
+            assignee_id,
+            status,
+            surplus_cents,
+            notes,
+        ),
+    )
+    instance_id = cursor.lastrowid
+    for roommate_id, amount_cents in payments.items():
+        conn.execute(
+            """
+            INSERT INTO instance_payments (instance_id, roommate_id, amount_cents)
+            VALUES (?, ?, ?)
+            """,
+            (instance_id, roommate_id, amount_cents),
+        )
+    return instance_id
+
+
+def spawn_week(week_start: str) -> int:
+    """Spawn one instance per active recurring chore for ``week_start``.
+
+    Idempotent: chores that already have an instance for the week are skipped
+    (enforced both here and by the UNIQUE(recurring_chore_id, week_start) guard).
+    Returns the number of instances created.
+    """
+    week = date.fromisoformat(week_start)
+    due = due_date_for(week).isoformat()
+    roommates = [Roommate(id=row["id"], name=row["name"]) for row in active_roommates()]
+
+    spawned = 0
     with connect() as conn:
-        weeks = [
-            row["week_start"]
-            for row in conn.execute(
+        chores = conn.execute(
+            "SELECT * FROM recurring_chores WHERE active = 1 ORDER BY name"
+        ).fetchall()
+        for chore in chores:
+            exists = conn.execute(
                 """
-                SELECT DISTINCT week_start
-                FROM preferences
-                WHERE roommate_id = ?
-                ORDER BY week_start ASC
+                SELECT 1 FROM chore_instances
+                WHERE recurring_chore_id = ? AND week_start = ?
                 """,
-                (roommate_id,),
-            ).fetchall()
-        ]
-        rows = []
-        for week in weeks:
-            prefs = conn.execute(
-                """
-                SELECT p.*, c.name AS chore_name, c.frequency AS chore_frequency
-                FROM preferences p
-                JOIN chores c ON c.id = p.chore_id
-                WHERE p.roommate_id = ? AND p.week_start = ?
-                ORDER BY c.name
-                """,
-                (roommate_id, week),
-            ).fetchall()
-            rows.append({"week_start": week, "preferences": prefs})
-        return rows
+                (chore["id"], week_start),
+            ).fetchone()
+            if exists:
+                continue
+            prefs = _preference_map(conn, chore["id"], roommates)
+            ledger = compute_chore_ledger(
+                Chore(id=chore["id"], name=chore["name"]), roommates, prefs
+            )
+            _insert_instance(
+                conn,
+                recurring_chore_id=chore["id"],
+                name=chore["name"],
+                description=chore["description"],
+                week_start=week_start,
+                due_date=due,
+                assignee_id=ledger.assignee.id if ledger.assignee else None,
+                status="pending",
+                surplus_cents=ledger.surplus_cents,
+                notes=ledger.notes,
+                payments=ledger.payments,
+            )
+            spawned += 1
+    return spawned
 
 
-def known_weeks() -> list[str]:
+def ensure_weeks_through(today: date | None = None) -> int:
+    """Catch-up spawner: fill every Sunday week from the last spawned recurring
+    week (or the current week if none) through the upcoming week."""
+    today = today or date.today()
+    target = upcoming_week(today)
+
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT MAX(week_start) AS last_week
+            FROM chore_instances
+            WHERE recurring_chore_id IS NOT NULL
+            """
+        ).fetchone()
+
+    if row and row["last_week"]:
+        week = date.fromisoformat(row["last_week"]) + timedelta(days=7)
+    else:
+        week = current_week(today)
+
+    spawned = 0
+    while week <= target:
+        spawned += spawn_week(week.isoformat())
+        week += timedelta(days=7)
+    return spawned
+
+
+def add_one_off_instance(
+    name: str,
+    description: str,
+    week_start: str,
+    assignee_id: int | None,
+    payout_cents: int,
+) -> int:
+    week = date.fromisoformat(week_start)
+    due = due_date_for(week).isoformat()
+    roommate_ids = [row["id"] for row in active_roommates()]
+    payments = (
+        flat_payout_payments(assignee_id, roommate_ids, payout_cents)
+        if assignee_id is not None
+        else {rid: 0 for rid in roommate_ids}
+    )
+    with connect() as conn:
+        return _insert_instance(
+            conn,
+            recurring_chore_id=None,
+            name=name.strip(),
+            description=description.strip(),
+            week_start=week_start,
+            due_date=due,
+            assignee_id=assignee_id,
+            status="pending",
+            surplus_cents=payout_cents,
+            notes="One-off entry.",
+            payments=payments,
+        )
+
+
+def set_instance_status(instance_id: int, status: str) -> None:
+    if status not in VALID_STATUSES:
+        raise ValueError(f"Invalid status: {status!r}")
+    with connect() as conn:
+        conn.execute(
+            "UPDATE chore_instances SET status = ? WHERE id = ?",
+            (status, instance_id),
+        )
+
+
+_EDITABLE_COLUMNS = ("name", "description", "due_date", "status")
+
+
+def update_instance(instance_id: int, **changes: object) -> None:
+    """Spreadsheet-style edit of a ledger row.
+
+    Accepts any of name/description/due_date/status/assignee_id/payout_cents.
+    Changing the assignee or payout re-derives the row's payment snapshot:
+    one-offs use a flat payout split, recurring rows re-run the AGV transfer
+    with the chosen assignee.
+    """
+    allowed = set(_EDITABLE_COLUMNS) | {"assignee_id", "payout_cents"}
+    unknown = set(changes) - allowed
+    if unknown:
+        raise ValueError(f"Unknown fields: {sorted(unknown)}")
+    if "status" in changes and changes["status"] not in VALID_STATUSES:
+        raise ValueError(f"Invalid status: {changes['status']!r}")
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM chore_instances WHERE id = ?", (instance_id,)
+        ).fetchone()
+        if row is None:
+            return
+
+        sets: list[str] = []
+        params: list[object] = []
+        for column in _EDITABLE_COLUMNS:
+            if column in changes:
+                sets.append(f"{column} = ?")
+                params.append(changes[column])
+        if "assignee_id" in changes:
+            sets.append("assignee_id = ?")
+            params.append(changes["assignee_id"])
+        if sets:
+            conn.execute(
+                f"UPDATE chore_instances SET {', '.join(sets)} WHERE id = ?",
+                params + [instance_id],
+            )
+
+        if "assignee_id" in changes or "payout_cents" in changes:
+            _recompute_instance_payments(
+                conn,
+                instance_id,
+                payout_override=changes.get("payout_cents"),
+            )
+
+
+def _recompute_instance_payments(
+    conn: sqlite3.Connection,
+    instance_id: int,
+    payout_override: object | None = None,
+) -> None:
+    row = conn.execute(
+        "SELECT * FROM chore_instances WHERE id = ?", (instance_id,)
+    ).fetchone()
+    roommates = [
+        Roommate(id=r["id"], name=r["name"])
+        for r in conn.execute(
+            "SELECT * FROM roommates WHERE active = 1 ORDER BY name"
+        ).fetchall()
+    ]
+    roommate_ids = [r.id for r in roommates]
+
+    if row["recurring_chore_id"] is None:
+        payout = (
+            int(payout_override)
+            if payout_override is not None
+            else row["surplus_cents"]
+        )
+        assignee_id = row["assignee_id"]
+        payments = (
+            flat_payout_payments(assignee_id, roommate_ids, payout)
+            if assignee_id is not None
+            else {rid: 0 for rid in roommate_ids}
+        )
+        surplus = payout
+    else:
+        chore = conn.execute(
+            "SELECT name FROM recurring_chores WHERE id = ?",
+            (row["recurring_chore_id"],),
+        ).fetchone()
+        prefs = _preference_map(conn, row["recurring_chore_id"], roommates)
+        ledger = compute_chore_ledger(
+            Chore(id=row["recurring_chore_id"], name=chore["name"]),
+            roommates,
+            prefs,
+            forced_assignee_id=row["assignee_id"],
+        )
+        payments = ledger.payments
+        surplus = ledger.surplus_cents
+        assignee_id = ledger.assignee.id if ledger.assignee else None
+
+    conn.execute("DELETE FROM instance_payments WHERE instance_id = ?", (instance_id,))
+    conn.execute(
+        "UPDATE chore_instances SET assignee_id = ?, surplus_cents = ? WHERE id = ?",
+        (assignee_id, surplus, instance_id),
+    )
+    for roommate_id, amount_cents in payments.items():
+        conn.execute(
+            """
+            INSERT INTO instance_payments (instance_id, roommate_id, amount_cents)
+            VALUES (?, ?, ?)
+            """,
+            (instance_id, roommate_id, amount_cents),
+        )
+
+
+def delete_instance(instance_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM chore_instances WHERE id = ?", (instance_id,))
+
+
+def recompute_week(week_start: str) -> int:
+    """Refresh AGV snapshots for not-yet-done recurring instances of a week.
+
+    Used after preferences change. One-off rows keep their manual snapshot.
+    """
+    roommates = [Roommate(id=row["id"], name=row["name"]) for row in active_roommates()]
+    updated = 0
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT week_start FROM preferences
-            UNION
-            SELECT week_start FROM ledger_runs
-            ORDER BY week_start DESC
-            """
+            SELECT ci.*, rc.name AS chore_name
+            FROM chore_instances ci
+            JOIN recurring_chores rc ON rc.id = ci.recurring_chore_id
+            WHERE ci.week_start = ? AND ci.status != 'done'
+            """,
+            (week_start,),
+        ).fetchall()
+        for row in rows:
+            prefs = _preference_map(conn, row["recurring_chore_id"], roommates)
+            ledger = compute_chore_ledger(
+                Chore(id=row["recurring_chore_id"], name=row["chore_name"]),
+                roommates,
+                prefs,
+            )
+            conn.execute(
+                "DELETE FROM instance_payments WHERE instance_id = ?", (row["id"],)
+            )
+            conn.execute(
+                """
+                UPDATE chore_instances
+                SET assignee_id = ?, surplus_cents = ?, notes = ?
+                WHERE id = ?
+                """,
+                (
+                    ledger.assignee.id if ledger.assignee else None,
+                    ledger.surplus_cents,
+                    ledger.notes,
+                    row["id"],
+                ),
+            )
+            for roommate_id, amount_cents in ledger.payments.items():
+                conn.execute(
+                    """
+                    INSERT INTO instance_payments
+                        (instance_id, roommate_id, amount_cents)
+                    VALUES (?, ?, ?)
+                    """,
+                    (row["id"], roommate_id, amount_cents),
+                )
+            updated += 1
+    return updated
+
+
+def recompute_future_weeks(today: date | None = None) -> int:
+    """Refresh non-done recurring instances for the current week onward.
+
+    Called automatically after preferences change so the ledger stays in sync
+    without a manual button.
+    """
+    today = today or date.today()
+    cutoff = current_week(today).isoformat()
+    updated = 0
+    for week in known_instance_weeks():
+        if week >= cutoff:
+            updated += recompute_week(week)
+    return updated
+
+
+def preferences_by_chore() -> dict[int, dict[int, dict[str, int]]]:
+    """{recurring_chore_id: {roommate_id: {wtp_cents, bid_cents}}} for the grid."""
+    grid = preferences_grid()
+    out: dict[int, dict[int, dict[str, int]]] = {}
+    for roommate_id, chores in grid.items():
+        for chore_id, pref in chores.items():
+            out.setdefault(chore_id, {})[roommate_id] = {
+                "wtp_cents": pref.wtp_cents,
+                "bid_cents": pref.bid_cents,
+            }
+    return out
+
+
+def all_instances(
+    week_start: str | None = None,
+    assignee_id: int | None = None,
+) -> list[dict[str, object]]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if week_start:
+        clauses.append("ci.week_start = ?")
+        params.append(week_start)
+    if assignee_id:
+        clauses.append("ci.assignee_id = ?")
+        params.append(assignee_id)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT ci.*, r.name AS assignee_name
+            FROM chore_instances ci
+            LEFT JOIN roommates r ON r.id = ci.assignee_id
+            {where}
+            ORDER BY ci.week_start, ci.due_date, ci.name, ci.id
+            """,
+            params,
+        ).fetchall()
+
+        result = []
+        for row in rows:
+            payments = conn.execute(
+                """
+                SELECT p.roommate_id, p.amount_cents, rm.name AS roommate_name
+                FROM instance_payments p
+                JOIN roommates rm ON rm.id = p.roommate_id
+                WHERE p.instance_id = ?
+                ORDER BY rm.name
+                """,
+                (row["id"],),
+            ).fetchall()
+            result.append(
+                {
+                    "id": row["id"],
+                    "recurring_chore_id": row["recurring_chore_id"],
+                    "name": row["name"],
+                    "description": row["description"],
+                    "week_start": row["week_start"],
+                    "due_date": row["due_date"],
+                    "assignee_id": row["assignee_id"],
+                    "assignee_name": row["assignee_name"],
+                    "status": row["status"],
+                    "surplus_cents": row["surplus_cents"],
+                    "notes": row["notes"],
+                    "is_one_off": row["recurring_chore_id"] is None,
+                    "payments": [
+                        {
+                            "roommate_id": payment["roommate_id"],
+                            "roommate_name": payment["roommate_name"],
+                            "amount_cents": payment["amount_cents"],
+                        }
+                        for payment in payments
+                    ],
+                }
+            )
+        return result
+
+
+def known_instance_weeks() -> list[str]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT week_start FROM chore_instances ORDER BY week_start DESC"
         ).fetchall()
         return [row["week_start"] for row in rows]
 
 
-def reset_mock_data() -> None:
-    sheet_rows = expanded_sheet_rows()
-    with connect() as conn:
-        conn.executescript(
-            """
-            DELETE FROM ledger_payments;
-            DELETE FROM ledger_entries;
-            DELETE FROM ledger_runs;
-            DELETE FROM preferences;
-            DELETE FROM roommates;
-            DELETE FROM chores;
-            DELETE FROM sqlite_sequence
-            WHERE name IN (
-                'ledger_payments',
-                'ledger_entries',
-                'ledger_runs',
-                'preferences',
-                'roommates',
-                'chores'
-            );
-            """
-        )
-        conn.executemany(
-            "INSERT INTO roommates (name) VALUES (?)",
-            [(name,) for name in SHEET_ROOMMATES],
-        )
-
-        chore_records = []
-        for name in sorted({row[2] for row in sheet_rows}):
-            matching_rows = [row for row in sheet_rows if row[2] == name]
-            frequency = normalize_sheet_frequency(matching_rows[-1][3])
-            description = describe_sheet_chore(matching_rows)
-            chore_records.append((name, frequency, description))
-
-        conn.executemany(
-            """
-            INSERT INTO chores (name, frequency, description)
-            VALUES (?, ?, ?)
-            """,
-            chore_records,
-        )
-
-    roommates = {row["name"]: row for row in active_roommates()}
-    chores = {row["name"]: row for row in active_chores()}
-    weeks = sorted({row[0] for row in sheet_rows})
-
-    for week_start in weeks:
-        rows_for_week = [row for row in sheet_rows if row[0] == week_start]
-        assigned_chores = {row[2]: row for row in rows_for_week}
-        for roommate in roommates.values():
-            values = {}
-            for chore in chores.values():
-                sheet_row = assigned_chores.get(chore["name"])
-                if sheet_row:
-                    assigned_name = sheet_row[1]
-                    original_frequency = sheet_row[3]
-                    listed_cost = sheet_row[5]
-                    values[chore["id"]] = sheet_preference_for(
-                        roommate_name=roommate["name"],
-                        assigned_name=assigned_name,
-                        chore_name=chore["name"],
-                        original_frequency=original_frequency,
-                        listed_cost=listed_cost,
-                    )
-                else:
-                    values[chore["id"]] = inactive_sheet_preference(chore["name"])
-            save_preferences(roommate["id"], week_start, values)
-
-    for week_start in weeks:
-        chore_ids = [
-            chores[row[2]]["id"]
-            for row in sheet_rows
-            if row[0] == week_start
-        ]
-        record_ledger_run(week_start, chore_ids=chore_ids)
-
-
-def expanded_sheet_rows() -> list[tuple[str, str, str, str, str, int]]:
-    counts: dict[tuple[str, str], int] = {}
-    for row in SHEET_LEDGER_ROWS:
-        key = (row[0], row[2])
-        counts[key] = counts.get(key, 0) + 1
-
-    seen: dict[tuple[str, str], int] = {}
-    expanded = []
-    for week_start, roommate, chore_name, frequency, due_date, cost in SHEET_LEDGER_ROWS:
-        key = (week_start, chore_name)
-        seen[key] = seen.get(key, 0) + 1
-        if counts[key] > 1:
-            chore_name = f"{chore_name} ({roommate} {week_start})"
-        expanded.append((week_start, roommate, chore_name, frequency, due_date, cost))
-    return expanded
-
-
-def normalize_sheet_frequency(frequency: str) -> str:
-    clean = frequency.strip().lower()
-    if "once" in clean:
-        return "one-off"
-    if "3 weeks" in clean or "2 weeks" in clean:
-        return "monthly"
-    return "weekly"
-
-
-def describe_sheet_chore(rows: list[tuple[str, str, str, str, str, int]]) -> str:
-    latest = rows[-1]
-    costs = sorted({row[5] for row in rows})
-    cost_text = ", ".join(cents_to_text(cost) for cost in costs)
-    return (
-        f"Sheet frequency: {latest[3]}; due: {latest[4]}; "
-        f"listed cost(s): {cost_text}."
-    )
-
-
-def sheet_preference_for(
-    roommate_name: str,
-    assigned_name: str,
-    chore_name: str,
-    original_frequency: str,
-    listed_cost: int,
-) -> tuple[int, int]:
-    wtp = intuitive_wtp(chore_name, original_frequency, listed_cost)
-    if listed_cost <= 0:
-        return (wtp, 0 if roommate_name == assigned_name else max(100, wtp + 200))
-
-    if roommate_name == assigned_name:
-        bid = max(100, listed_cost)
-    else:
-        bid = max(listed_cost + 500, wtp + 300)
-    return (wtp, bid)
-
-
-def inactive_sheet_preference(chore_name: str) -> tuple[int, int]:
-    wtp = max(100, intuitive_wtp(chore_name, "", 0) // 4)
-    return (wtp, wtp + 500)
-
-
-def intuitive_wtp(chore_name: str, frequency: str, listed_cost: int) -> int:
-    text = f"{chore_name} {frequency}".lower()
-    base = 500
-    if "trash" in text or "recycle" in text:
-        base = 2200
-    elif "bathroom" in text:
-        base = 2000
-    elif "dishes" in text:
-        base = 1700
-    elif "vacuum" in text or "sweep" in text:
-        base = 1500
-    elif "kitchen surfaces" in text or "sink" in text or "microwave" in text:
-        base = 1100
-    elif "wifi" in text or "verizon" in text or "dishwasher" in text:
-        base = 1200
-    elif "pressure" in text or "cleaning person" in text:
-        base = 900
-    elif "tv" in text:
-        base = 700
-
-    if "2/week" in text:
-        base += 350
-    if "weekly" in text:
-        base += 250
-    if "once" in text:
-        base -= 100
-
-    return max(100, base + (listed_cost // 3))
-
-
-def cents_to_text(value: int) -> str:
-    return f"${value // 100}.{value % 100:02d}"
-
-
-def compute_week_ledger(
-    week_start: str,
-    chore_ids: list[int] | None = None,
-) -> list[ChoreLedger]:
-    roommates = [
-        Roommate(id=row["id"], name=row["name"])
-        for row in active_roommates()
-    ]
-    chores = [
-        Chore(id=row["id"], name=row["name"], frequency=row["frequency"])
-        for row in active_chores()
-        if chore_ids is None or row["id"] in chore_ids
-    ]
-    preference_map = effective_preferences_for_week(week_start)
-    return [
-        compute_chore_ledger(chore, roommates, preference_map[chore.id])
-        for chore in chores
-    ]
-
-
-def record_ledger_run(week_start: str, chore_ids: list[int] | None = None) -> None:
-    entries = compute_week_ledger(week_start, chore_ids=chore_ids)
-    with connect() as conn:
-        conn.execute("DELETE FROM ledger_runs WHERE week_start = ?", (week_start,))
-        cursor = conn.execute(
-            "INSERT INTO ledger_runs (week_start) VALUES (?)", (week_start,)
-        )
-        run_id = cursor.lastrowid
-        for entry in entries:
-            cursor = conn.execute(
-                """
-                INSERT INTO ledger_entries
-                    (run_id, week_start, chore_id, assignee_id, surplus_cents, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    week_start,
-                    entry.chore.id,
-                    entry.assignee.id if entry.assignee else None,
-                    entry.surplus_cents,
-                    entry.notes,
-                ),
-            )
-            entry_id = cursor.lastrowid
-            for roommate_id, amount_cents in entry.payments.items():
-                conn.execute(
-                    """
-                    INSERT INTO ledger_payments
-                        (entry_id, roommate_id, amount_cents)
-                    VALUES (?, ?, ?)
-                    """,
-                    (entry_id, roommate_id, amount_cents),
-                )
-
-
-def saved_ledger_weeks() -> list[sqlite3.Row]:
-    with connect() as conn:
-        return conn.execute(
-            "SELECT * FROM ledger_runs ORDER BY week_start DESC"
-        ).fetchall()
-
-
-def saved_ledger_weeks_ascending() -> list[sqlite3.Row]:
-    with connect() as conn:
-        return conn.execute(
-            "SELECT * FROM ledger_runs ORDER BY week_start ASC"
-        ).fetchall()
-
-
-def saved_ledger_for_week(week_start: str) -> list[sqlite3.Row]:
-    with connect() as conn:
-        return conn.execute(
-            """
-            SELECT
-                e.id AS entry_id,
-                e.week_start,
-                e.surplus_cents,
-                c.name AS chore_name,
-                c.frequency,
-                c.description AS chore_description,
-                r.name AS assignee_name,
-                p.amount_cents,
-                payer.name AS roommate_name
-            FROM ledger_entries e
-            JOIN chores c ON c.id = e.chore_id
-            LEFT JOIN roommates r ON r.id = e.assignee_id
-            JOIN ledger_payments p ON p.entry_id = e.id
-            JOIN roommates payer ON payer.id = p.roommate_id
-            WHERE e.week_start = ?
-            ORDER BY c.name, payer.name
-            """,
-            (week_start,),
-        ).fetchall()
-
-
+# --------------------------------------------------------------------------- #
+# Balances (only 'done' instances pay out)
+# --------------------------------------------------------------------------- #
 def overall_balances() -> dict[str, object]:
     with connect() as conn:
         net_rows = conn.execute(
             """
-            SELECT r.id, r.name, COALESCE(SUM(p.amount_cents), 0) AS net_cents
+            SELECT
+                r.id,
+                r.name,
+                COALESCE(
+                    SUM(CASE WHEN ci.status = 'done' THEN p.amount_cents ELSE 0 END),
+                    0
+                ) AS net_cents
             FROM roommates r
-            LEFT JOIN ledger_payments p ON p.roommate_id = r.id
+            LEFT JOIN instance_payments p ON p.roommate_id = r.id
+            LEFT JOIN chore_instances ci ON ci.id = p.instance_id
+            WHERE r.active = 1
             GROUP BY r.id, r.name
             ORDER BY r.name
             """
         ).fetchall()
 
     settlements = settle_balances(
-        {row["id"]: {"name": row["name"], "net_cents": row["net_cents"]} for row in net_rows}
+        {
+            row["id"]: {"name": row["name"], "net_cents": row["net_cents"]}
+            for row in net_rows
+        }
     )
     return {"nets": net_rows, "settlements": settlements}
 
@@ -608,6 +703,87 @@ def settle_balances(
     return settlements
 
 
+# --------------------------------------------------------------------------- #
+# Misc helpers
+# --------------------------------------------------------------------------- #
 def week_from_string(value: str) -> str:
-    parsed = date.fromisoformat(value)
-    return parsed.isoformat()
+    return date.fromisoformat(value).isoformat()
+
+
+# --------------------------------------------------------------------------- #
+# Mock data
+# --------------------------------------------------------------------------- #
+def _mock_preference(roommate_name: str, chore_name: str) -> tuple[int, int]:
+    base = 800 + (sum(map(ord, chore_name)) % 9) * 100
+    offset = (sum(map(ord, roommate_name)) % 5) * 75
+    wtp = base + offset
+    bid = wtp + 300 + (sum(map(ord, roommate_name + chore_name)) % 6) * 100
+    return wtp, bid
+
+
+def reset_mock_data(today: date | None = None) -> None:
+    today = today or date.today()
+    with connect() as conn:
+        conn.executescript(
+            """
+            DELETE FROM instance_payments;
+            DELETE FROM chore_instances;
+            DELETE FROM chore_preferences;
+            DELETE FROM roommates;
+            DELETE FROM recurring_chores;
+            DELETE FROM sqlite_sequence
+            WHERE name IN (
+                'instance_payments',
+                'chore_instances',
+                'chore_preferences',
+                'roommates',
+                'recurring_chores'
+            );
+            """
+        )
+        conn.executemany(
+            "INSERT INTO roommates (name) VALUES (?)",
+            [(name,) for name in MOCK_ROOMMATES],
+        )
+        conn.executemany(
+            "INSERT INTO recurring_chores (name, description) VALUES (?, ?)",
+            MOCK_RECURRING_CHORES,
+        )
+
+    roommates = active_roommates()
+    chores = active_recurring_chores()
+    for roommate in roommates:
+        for chore in chores:
+            wtp, bid = _mock_preference(roommate["name"], chore["name"])
+            save_preference(roommate["id"], chore["id"], wtp, bid)
+
+    cur = current_week(today)
+    past_weeks = [cur - timedelta(days=7 * k) for k in range(3, 0, -1)]
+    for week in past_weeks + [cur, upcoming_week(today)]:
+        spawn_week(week.isoformat())
+
+    # Mark the three completed weeks done, with a couple of realistic failures.
+    with connect() as conn:
+        for week in past_weeks:
+            conn.execute(
+                "UPDATE chore_instances SET status = 'done' WHERE week_start = ?",
+                (week.isoformat(),),
+            )
+        # One chore slips in the oldest week.
+        conn.execute(
+            """
+            UPDATE chore_instances SET status = 'failed'
+            WHERE week_start = ? AND name = 'Clean microwave'
+            """,
+            (past_weeks[0].isoformat(),),
+        )
+
+    # A directly-entered one-off in the current week.
+    first_roommate = roommates[0]["id"]
+    add_one_off_instance(
+        name="Assemble new bookshelf",
+        description="One-off: build the hallway bookshelf",
+        week_start=cur.isoformat(),
+        assignee_id=first_roommate,
+        payout_cents=2500,
+    )

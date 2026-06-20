@@ -9,13 +9,32 @@
   --receive: #14633a;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   background: var(--bg);
   color: var(--ink);
+  margin: 0;
+}
+
+.app-root-full {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .app-nav {
   min-height: 64px;
+}
+
+.app-nav-container {
+  padding-left: 16px;
+  padding-right: 16px;
 }
 
 .brand {
@@ -108,6 +127,28 @@ h2 {
   white-space: nowrap;
 }
 
+/* Sticky spreadsheet headers inside the scroll container. Two header rows, so
+   the roommate-name row pins at the top and the WTP/Bid row pins just below it. */
+.ledger-table.sheet thead th {
+  position: sticky;
+  z-index: 3;
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.ledger-table.sheet thead tr:nth-child(1) th {
+  top: 0;
+  height: 30px;
+}
+
+.ledger-table.sheet thead tr:nth-child(2) th {
+  top: 30px;
+  height: 28px;
+}
+
+.ledger-table.sheet thead tr:nth-child(3) th {
+  top: 58px;
+}
+
 .ledger-table td {
   font-size: 14px;
   min-width: 120px;
@@ -125,6 +166,60 @@ h2 {
 
 .locked-row {
   color: var(--muted);
+}
+
+/* Ledger row shading by week / status. */
+.ledger-table tbody tr.row-done > td {
+  background: #ededed;
+  color: var(--muted);
+}
+
+.ledger-table tbody tr.row-current > td {
+  background: #ffffff;
+}
+
+.ledger-table tbody tr.row-upcoming > td {
+  background: #efe6fb;
+}
+
+.ledger-table tbody tr.row-other > td {
+  background: #faf9f5;
+}
+
+.legend {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 14px;
+}
+
+.legend-item {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.legend-dot {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  display: inline-block;
+  height: 14px;
+  width: 14px;
+}
+
+.legend-dot.legend-current {
+  background: #ffffff;
+}
+
+.legend-dot.legend-upcoming {
+  background: #efe6fb;
+}
+
+.legend-dot.legend-done {
+  background: #ededed;
 }
 
 .pay {
@@ -145,4 +240,297 @@ h2 {
   .ledger-table td:nth-child(3) {
     min-width: 240px;
   }
+}
+
+/* ---- Full-bleed spreadsheet ledger ---- */
+.ledger-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px 16px 0;
+}
+
+.ledger-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 10px;
+}
+
+.ledger-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.ledger-table.sheet {
+  margin-bottom: 0;
+  /* Grow past the container (horizontal scroll) instead of squashing columns. */
+  width: max-content;
+  min-width: 100%;
+}
+
+.ledger-table.sheet thead tr:first-child th:nth-child(2) {
+  min-width: 110px; /* Due */
+}
+
+.ledger-table.sheet thead tr:first-child th:nth-child(3) {
+  min-width: 220px; /* Chore */
+}
+
+.ledger-table.sheet td {
+  min-width: 0;
+  padding: 0;
+  vertical-align: middle;
+}
+
+.ledger-table.sheet td.nowrap,
+.ledger-table.sheet td.num {
+  white-space: nowrap;
+}
+
+.ledger-table.sheet td.num {
+  padding: 0 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-table.sheet td:first-child {
+  padding: 0 10px;
+}
+
+/* Borderless inputs so cells read like a spreadsheet until focused. */
+.sheet-input {
+  border: 1px solid transparent !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  height: 34px;
+  padding: 2px 8px !important;
+}
+
+.sheet-input:focus {
+  border-color: var(--accent) !important;
+  background: #fffef9 !important;
+}
+
+.ledger-table.sheet td.num .money-input.sheet-input {
+  max-width: 110px;
+  text-align: right;
+}
+
+/* Each week is its own <tbody>; thick divider between them. */
+.ledger-table.sheet tbody.week-group:not(:first-of-type) > tr:first-child > td {
+  border-top: 3px solid #9b988d;
+}
+
+/* Merged week cell shared by every row in the week. */
+.ledger-table.sheet td.week-cell {
+  vertical-align: top;
+  white-space: nowrap;
+  font-weight: 700;
+  padding: 8px 12px;
+  border-right: 2px solid #9b988d;
+}
+
+.ledger-table.sheet td.week-cell.wk-current {
+  background: #ffffff;
+}
+
+.ledger-table.sheet td.week-cell.wk-upcoming {
+  background: #efe6fb;
+}
+
+.ledger-table.sheet td.week-cell.wk-other {
+  background: #f4f3ee;
+}
+
+.week-date {
+  font-variant-numeric: tabular-nums;
+}
+
+.week-flag {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* Done rows shade gray, but never the week cell or the striped pref edges
+   (so the hatch shows on every row, gray ones included). */
+.ledger-table.sheet tbody tr.is-done > td:not(.week-cell):not(.prefs-edge):not(.prefs-roommate-edge-cell) {
+  background: #ededed;
+  color: var(--muted);
+}
+
+.week-cell .week-progress {
+  width: 150px;
+  margin-top: 10px;
+}
+
+.week-progress-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  margin-top: 4px;
+  text-transform: uppercase;
+}
+
+.week-cell .week-progress .progress {
+  height: 12px;
+}
+
+/* Clickable WTP/Bid toggles: section header, per-roommate group, and the
+   collapsed edges. Chevrons point outward (‹x›) to expand, inward (›x‹) to
+   collapse. */
+.ledger-table.sheet th.prefs-edge-th,
+.ledger-table.sheet th.prefs-section-th,
+.ledger-table.sheet th.prefs-group,
+.ledger-table.sheet th.prefs-roommate-edge {
+  cursor: pointer;
+  text-align: center;
+  border-left: 2px solid #9b988d;
+  user-select: none;
+}
+
+.prefs-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 800;
+  text-transform: none;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.prefs-label.collapsed {
+  color: var(--muted);
+}
+
+/* WTP/BID banner spanning the roommate columns. */
+.ledger-table.sheet th.prefs-section-th {
+  background: #e7e5dc;
+  border-right: 2px solid #9b988d;
+}
+
+.ledger-table.sheet th.prefs-roommate-edge:hover,
+.ledger-table.sheet th.prefs-edge-th:hover,
+.ledger-table.sheet th.prefs-section-th:hover,
+.ledger-table.sheet th.prefs-group:hover {
+  background: #e8e6dd;
+}
+
+/* Thin body columns under the collapsed section / collapsed roommates. */
+.ledger-table.sheet td.prefs-edge,
+.ledger-table.sheet td.prefs-roommate-edge-cell {
+  min-width: 16px;
+  padding: 0;
+  border-left: 2px solid #9b988d;
+  background: repeating-linear-gradient(
+    45deg,
+    #ecebe4,
+    #ecebe4 3px,
+    #e2e0d6 3px,
+    #e2e0d6 6px
+  );
+}
+
+.ledger-table.sheet td.prefs-edge,
+.ledger-table.sheet td.prefs-roommate-edge-cell {
+  cursor: pointer;
+}
+
+.ledger-table.sheet td.prefs-edge:hover,
+.ledger-table.sheet td.prefs-roommate-edge-cell:hover {
+  background: repeating-linear-gradient(
+    45deg,
+    #e0ded2,
+    #e0ded2 3px,
+    #d4d1c4 3px,
+    #d4d1c4 6px
+  );
+}
+
+/* Expanded roommate: WTP/Bid sub-headers and value cells. */
+.ledger-table.sheet th.pref-sub {
+  text-align: right;
+  font-size: 10px;
+}
+
+.ledger-table.sheet td.pref-cell {
+  padding: 0 8px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--muted);
+  background: #fbfaf6;
+}
+
+.ledger-table.sheet td.pref-cell,
+.ledger-table.sheet th.pref-sub {
+  min-width: 64px;
+}
+
+.ledger-table.sheet td.pref-cell-start,
+.ledger-table.sheet th.pref-cell-start {
+  border-left: 2px solid #9b988d;
+}
+
+.ledger-table.sheet td.pref-cell-end,
+.ledger-table.sheet th.pref-cell-end {
+  border-right: 2px solid #9b988d;
+}
+
+.cell-static {
+  display: inline-block;
+  padding: 2px 8px;
+}
+
+.tag {
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.row-delete {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.row-delete:hover {
+  color: var(--pay);
+}
+
+.add-row td {
+  padding: 0 !important;
+}
+
+.add-row-btn {
+  width: 100%;
+  border: none;
+  background: #f6f5f0;
+  color: var(--accent);
+  font-weight: 800;
+  padding: 10px;
+  cursor: pointer;
+  text-align: left;
+  padding-left: 14px;
+}
+
+.add-row-btn:hover {
+  background: #eceae2;
 }

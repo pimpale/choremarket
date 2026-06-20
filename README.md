@@ -1,12 +1,23 @@
 # Choremarket
 
-A small FastAPI + SQLite app with a React-Bootstrap frontend for a roommate chore market. It has pages for:
+A small FastAPI + SQLite app with a React-Bootstrap frontend for a roommate chore market.
 
-- Admin roommate management
-- Overall balances from recorded weekly ledgers
-- Chore list management
-- Weekly roommate preferences
-- Weekly AGV-style ledger previews and snapshots
+The data model splits chores into **recurring chores** (templates) and **chore instances**
+(the actual ledger rows). Weeks run **Sunday → Saturday**; a background scheduler spawns one
+instance per active recurring chore each week (with catch-up on startup), auto-assigning it via
+the AGV mechanism from each roommate's recurring-chore preferences. One-off chores are entered
+directly onto the ledger. Every instance has mutually-exclusive **done** / **failed** state —
+money only pays out when an instance is marked done.
+
+Pages:
+
+- **Ledger** (start page) — the global ledger of all instances, shaded by week/status
+  (done = gray, current week = white, upcoming week = light green), with done/failed checkboxes
+  and one-off entry.
+- **Roommate Preferences** — per-roommate WTP/bid for each recurring chore.
+- **Recurring Chores** — manage the weekly templates.
+- **Admin** — roommate management + mock-data reset.
+- **Overall Balances** — net balances (done instances only) and a settle-up plan.
 
 ## Run
 

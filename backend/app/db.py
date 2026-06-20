@@ -26,69 +26,71 @@ def init_db() -> None:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE TABLE IF NOT EXISTS chores (
+            -- Templates. Each active recurring chore spawns one instance per week.
+            CREATE TABLE IF NOT EXISTS recurring_chores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
-                frequency TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE TABLE IF NOT EXISTS preferences (
+            -- Week-independent WTP/bid preferences keyed by recurring chore.
+            CREATE TABLE IF NOT EXISTS chore_preferences (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 roommate_id INTEGER NOT NULL REFERENCES roommates(id),
-                chore_id INTEGER NOT NULL REFERENCES chores(id),
-                week_start TEXT NOT NULL,
+                recurring_chore_id INTEGER NOT NULL REFERENCES recurring_chores(id),
                 wtp_cents INTEGER NOT NULL DEFAULT 0,
                 bid_cents INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(roommate_id, chore_id, week_start)
+                UNIQUE(roommate_id, recurring_chore_id)
             );
 
-            CREATE TABLE IF NOT EXISTS ledger_runs (
+            -- The ledger rows: one concrete instance of a chore for a given week.
+            -- recurring_chore_id is NULL for one-offs entered directly on the ledger.
+            CREATE TABLE IF NOT EXISTS chore_instances (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                week_start TEXT NOT NULL UNIQUE,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS ledger_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id INTEGER NOT NULL REFERENCES ledger_runs(id) ON DELETE CASCADE,
+                recurring_chore_id INTEGER REFERENCES recurring_chores(id),
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
                 week_start TEXT NOT NULL,
-                chore_id INTEGER NOT NULL REFERENCES chores(id),
+                due_date TEXT NOT NULL,
                 assignee_id INTEGER REFERENCES roommates(id),
+                status TEXT NOT NULL DEFAULT 'pending',
                 surplus_cents INTEGER NOT NULL DEFAULT 0,
-                notes TEXT NOT NULL DEFAULT ''
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(recurring_chore_id, week_start)
             );
 
-            CREATE TABLE IF NOT EXISTS ledger_payments (
+            CREATE TABLE IF NOT EXISTS instance_payments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                entry_id INTEGER NOT NULL REFERENCES ledger_entries(id) ON DELETE CASCADE,
+                instance_id INTEGER NOT NULL
+                    REFERENCES chore_instances(id) ON DELETE CASCADE,
                 roommate_id INTEGER NOT NULL REFERENCES roommates(id),
                 amount_cents INTEGER NOT NULL
             );
             """
         )
-        seed_chores(conn)
+        seed_recurring_chores(conn)
         seed_roommates(conn)
 
 
-def seed_chores(conn: sqlite3.Connection) -> None:
-    count = conn.execute("SELECT COUNT(*) FROM chores").fetchone()[0]
+def seed_recurring_chores(conn: sqlite3.Connection) -> None:
+    count = conn.execute("SELECT COUNT(*) FROM recurring_chores").fetchone()[0]
     if count:
         return
 
     conn.executemany(
         """
-        INSERT INTO chores (name, frequency, description)
-        VALUES (?, ?, ?)
+        INSERT INTO recurring_chores (name, description)
+        VALUES (?, ?)
         """,
         [
-            ("Dishes", "weekly", "Kitchen reset, dishes, and counters"),
-            ("Trash", "weekly", "Take out trash and recycling"),
-            ("Bathroom", "monthly", "Clean sink, toilet, shower, and floor"),
-            ("Vacuum", "weekly", "Vacuum shared floors and rugs"),
+            ("Dishes", "Kitchen reset, dishes, and counters"),
+            ("Trash", "Take out trash and recycling"),
+            ("Bathroom", "Clean sink, toilet, shower, and floor"),
+            ("Vacuum", "Vacuum shared floors and rugs"),
         ],
     )
 
