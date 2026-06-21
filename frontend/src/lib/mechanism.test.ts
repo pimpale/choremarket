@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   computeBalances,
   computeFinancing,
+  computeFinancingCashflow,
   computeLedger,
   flatPayout,
   ledgerForInstance,
@@ -216,6 +217,62 @@ describe('EMA financing (with VCG)', () => {
     const settledOnly = financed(done);
     expect(withPending.nets).toEqual(settledOnly.nets);
     expect(withPending.houseCents).toBe(settledOnly.houseCents);
+  });
+
+  it('amortizes the doer payout over following weeks (no same-week receipt)', () => {
+    const weeks = [week(1, '2026-06-07'), week(2, '2026-06-14'), week(3, '2026-06-21')];
+    const flow = computeFinancingCashflow(weeks, people, prefsByChore, 'vcg');
+    const per = Math.round(Math.round(900 * 1.025) / 3);
+
+    // Week 1: the doer is owed 900 but the pool is empty, so nobody moves cash.
+    const w1 = flow.get('2026-06-07')!;
+    expect(w1.byRoommate.get(2)).toBe(0);
+    expect(w1.byRoommate.get(1)).toBe(0);
+
+    // Week 2: the levy is collected and the house pays the week-1 IOU back out.
+    const w2 = flow.get('2026-06-14')!.byRoommate;
+    expect(w2.get(1)).toBe(-per); // non-doers just pay the levy
+    expect(w2.get(3)).toBe(-per);
+    expect(w2.get(2)).toBe(3 * per - per); // doer receives the whole pool, less own levy
+  });
+
+  it('credits this week’s allocated (pending) doer so the week is not all-negative', () => {
+    const past = [week(1, '2026-06-07'), week(2, '2026-06-14'), week(3, '2026-06-21')];
+    const current: RawInstance = { ...week(4, '2026-06-28'), status: 'pending' };
+    const flow = computeFinancingCashflow([...past, current], people, prefsByChore, 'vcg');
+
+    const cur = flow.get('2026-06-28')!;
+    expect(cur.settled).toBe(false); // projected: this week isn't done
+    // The allocated doer is owed and paid down from the pool, so they net positive...
+    expect(cur.byRoommate.get(2)!).toBeGreaterThan(0);
+    // ...while the others pay the cash levy. (Before the fix, everyone was negative.)
+    expect(cur.byRoommate.get(1)!).toBeLessThan(0);
+  });
+
+  it('does not credit a failed chore', () => {
+    const failed: RawInstance = { ...week(1, '2026-06-07'), status: 'failed' };
+    const flow = computeFinancingCashflow([failed], people, prefsByChore, 'vcg');
+    const w = flow.get('2026-06-07')!;
+    expect([...w.byRoommate.values()].every((v) => v === 0)).toBe(true);
+    expect(w.houseDeficitCents).toBe(0); // nothing owed, nothing assessed
+  });
+
+  it('accrues notional surplus uncapped while cash collection stays capped', () => {
+    const weeks = Array.from({ length: 55 }, (_, k) =>
+      week(k + 1, new Date(Date.UTC(2026, 0, 4 + 7 * k)).toISOString().slice(0, 10)),
+    );
+    const flow = computeFinancingCashflow(weeks, people, prefsByChore, 'vcg');
+    const last = flow.get(new Date(Date.UTC(2026, 0, 4 + 7 * 54)).toISOString().slice(0, 10))!;
+
+    // The notional balance has crossed into surplus (negative) and keeps growing,
+    // even though the cash levy is capped at what the house still owes.
+    expect(last.houseDeficitCents).toBeLessThan(0);
+    // Once the backlog clears the doer is paid same-week (positive)...
+    expect(last.byRoommate.get(2)!).toBeGreaterThan(0);
+    // ...and non-doers pay strictly less than the full marked-up assessment; the
+    // gap is the surplus that accrues notionally without changing hands.
+    const notionalPerHead = Math.round(Math.round(900 * 1.025) / 3);
+    expect(Math.abs(last.byRoommate.get(1)!)).toBeLessThan(notionalPerHead);
   });
 
   it('financing off leaves the textbook VCG deficit untouched', () => {

@@ -392,6 +392,47 @@ h2 {
   padding: 4px 8px;
 }
 
+/* Financing on: one tall Transfer cell per week, a net-cash line per roommate. */
+.ledger-table.sheet td.transfer-week-cell {
+  min-width: 132px;
+  padding: 4px 8px;
+  vertical-align: middle;
+}
+
+.transfer-week {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.transfer-week-row {
+  align-items: baseline;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  white-space: nowrap;
+}
+
+.transfer-week-name {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.transfer-week-amt {
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.transfer-week-note {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: italic;
+  text-align: right;
+}
+
 .transfer-summary-value {
   display: block;
   font-size: 13px;

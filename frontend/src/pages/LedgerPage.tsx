@@ -3,7 +3,7 @@ import { Download, ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from 'rea
 import { Alert, Button, Form, Modal, ProgressBar, Tab, Table, Tabs } from 'react-bootstrap';
 
 import { api, cents, centsToDollars, dollarsToCents, paymentClass, useAsync } from '../lib/api';
-import { computeFinancing, ledgerForInstance, membersForWeek, type InstanceLedger, type Person, type RawInstance } from '../lib/mechanism';
+import { computeFinancing, computeFinancingCashflow, ledgerForInstance, membersForWeek, type InstanceLedger, type Person, type RawInstance } from '../lib/mechanism';
 
 // Shortest prefix of each name that's still unique among the others, e.g.
 // ["Bob", "Rob", "Ronald"] -> ["B", "Rob", "Ron"].
@@ -114,6 +114,27 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   const finSchedule = finActive
     ? computeFinancing(instances.map(rawOf), people, prefsByChore, mechanism, prefsByInstance).schedule
     : new Map();
+
+  // Under financing the Transfer column shows actual net cash per roommate per
+  // week: the flat levy everyone pays in, plus whatever the house pays back out of
+  // its IOU queue. A doer is credited the week they do a chore but paid over the
+  // following weeks, so this is an amortized cash flow, summarized per week (a tall
+  // cell) since the levy is one-per-week rather than per chore.
+  const finCashflow = finActive
+    ? computeFinancingCashflow(instances.map(rawOf), people, prefsByChore, mechanism, prefsByInstance)
+    : new Map();
+  const finNetByWeek = new Map<string, { id: number; name: string; netCash: number; projected: boolean }[]>();
+  for (const [week, flow] of finCashflow) {
+    finNetByWeek.set(
+      week,
+      membersForWeek(people, week).map((m) => ({
+        id: m.id,
+        name: m.name,
+        netCash: flow.byRoommate.get(m.id) ?? 0,
+        projected: !flow.settled,
+      })),
+    );
+  }
 
   function assigneeNetCents(instance: any): number | null {
     const ledger = ledgerOf(instance);
@@ -425,10 +446,12 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     { key: 'fin-ema', label: 'EMA' },
     { key: 'fin-levy', label: 'Levy' },
     { key: 'fin-share', label: 'Per head' },
+    { key: 'fin-house', label: 'House after' },
   ];
   const financingGroups = [
     { label: 'This chore', colSpan: 1 },
     { label: 'Weekly levy', colSpan: 3 },
+    { label: 'Running', colSpan: 1 },
   ];
   // 0 columns when financing is off; otherwise the collapsible block (1 edge / full).
   const finCols = finActive ? (showFin ? financingColumns.length : 1) : 0;
@@ -637,6 +660,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     // An unsettled week (this/next week) still has a known levy from past weeks;
     // flag it 'projected' since it isn't collected until the week settles.
     const projected = week ? !week.settled : false;
+    const houseAfter = finCashflow.get(instance.week_start)?.houseDeficitCents ?? null;
     const weekCell = (key: string, value: string | null, tip: string, partyLabel?: string, subLabel?: string) =>
       mechValueCell(key, value ?? '—', {
         tip,
@@ -666,6 +690,16 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         'Each member’s equal share of this week’s levy — same for everyone regardless of valuation, the doer included.',
         week ? `${week.memberCount} ${week.memberCount === 1 ? 'roommate' : 'roommates'}` : undefined,
       ),
+      houseAfter == null
+        ? mechValueCell('fin-house', '—', { tip: '', valueClass: 'muted-value', rowSpan: weekRows, extraClass: 'fin-week-cell' })
+        : mechValueCell('fin-house', cents(houseAfter), {
+            tip: 'The house’s notional running balance: total entitlements owed minus the full marked-up levy assessed. Positive = still owed (deficit); negative = surplus buffer. It keeps accruing surplus on the books even when no cash is collected — to be burned later.',
+            partyLabel: houseAfter > 0 ? 'still owed' : houseAfter < 0 ? 'surplus' : undefined,
+            subLabel: projected ? 'projected' : undefined,
+            valueClass: paymentClass(houseAfter),
+            rowSpan: weekRows,
+            extraClass: 'fin-week-cell',
+          }),
     ];
   }
 
@@ -791,20 +825,45 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         ) : (
           <td className="prefs-edge" />
         )}
-        <td className="num after-prefs transfer-summary-cell" title={paymentsTitle(instance)}>
-          {net == null ? (
-            <span className="cell-static">—</span>
-          ) : (
-            <>
-              <span className="transfer-summary-party">
-                {net < 0 ? 'from' : 'to'} {nameById.get(ledger.assigneeId!)}
-              </span>
-              <span className={`transfer-summary-value ${net > 0 ? 'receive' : net < 0 ? 'pay' : ''}`}>
-                {cents(Math.abs(net))}
-              </span>
-            </>
-          )}
-        </td>
+        {finActive ? (
+          // One tall cell per week listing each roommate's actual net cash.
+          rowIndex === 0 ? (
+            <td
+              rowSpan={weekRows}
+              className="num after-prefs transfer-week-cell"
+              title="Each roommate's net cash this week: their done-chore receipts minus the flat levy everyone pays into the pool."
+            >
+              <div className="transfer-week">
+                {(finNetByWeek.get(instance.week_start) ?? []).map((r) => (
+                  <div key={r.id} className="transfer-week-row">
+                    <span className="transfer-week-name">{r.name}</span>
+                    <span className={`transfer-week-amt ${r.netCash > 0 ? 'receive' : r.netCash < 0 ? 'pay' : ''}`}>
+                      {cents(r.netCash)}
+                    </span>
+                  </div>
+                ))}
+                {finNetByWeek.get(instance.week_start)?.[0]?.projected ? (
+                  <div className="transfer-week-note">projected</div>
+                ) : null}
+              </div>
+            </td>
+          ) : null
+        ) : (
+          <td className="num after-prefs transfer-summary-cell" title={paymentsTitle(instance)}>
+            {net == null ? (
+              <span className="cell-static">—</span>
+            ) : (
+              <>
+                <span className="transfer-summary-party">
+                  {net < 0 ? 'from' : 'to'} {nameById.get(ledger.assigneeId!)}
+                </span>
+                <span className={`transfer-summary-value ${net > 0 ? 'receive' : net < 0 ? 'pay' : ''}`}>
+                  {cents(Math.abs(net))}
+                </span>
+              </>
+            )}
+          </td>
+        )}
         {showMech ? (
           mechanismCells(instance, ledger)
         ) : (

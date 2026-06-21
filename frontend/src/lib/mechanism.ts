@@ -334,6 +334,106 @@ export function computeFinancing(
   return { schedule, nextRateCents };
 }
 
+// Actual net cash that moves for each roommate in a week.
+export interface WeekCashflow {
+  byRoommate: Map<number, number>; // roommate id -> net cash (+ received, - paid)
+  // The house's *notional* running balance after the week: cumulative entitlements
+  // owed minus the full marked-up levy assessed. Positive = still owed (deficit);
+  // negative = surplus. Uncapped -- the markup keeps accruing surplus even when no
+  // cash changes hands, so this is a buffer on the books to be burned later.
+  houseDeficitCents: number;
+  settled: boolean; // false = projected (this week's chores aren't done yet)
+}
+
+// Simulate the financed cash flow week by week.
+//
+// Entitlements are *allocation*-based: a chore credits its doer the moment it is
+// allocated (worth doing + assigned), so this/next week's pending chores count;
+// only a chore marked failed (or not worth doing) is dropped. The doer is credited
+// when allocated but only *paid* as the house pays its IOUs down (oldest first).
+//
+// Two ledgers run in parallel:
+//   - Cash (what actually moves): the house collects only what it needs to pay its
+//     outstanding IOUs -- never more -- so it never over-collects into a pile. Each
+//     roommate's net = the cash levy they pay minus any payout they receive.
+//   - Notional (the books): the full marked-up levy is assessed every week even
+//     when no cash is collected, so surplus accrues as a buffer (houseDeficitCents).
+export function computeFinancingCashflow(
+  instances: RawInstance[],
+  people: Person[],
+  prefsByChore: Record<number, Record<number, Pref>>,
+  mechanism: Mechanism,
+  prefsByInstance: Record<number, Record<number, NullablePref>> = {},
+): Map<string, WeekCashflow> {
+  const { schedule } = computeFinancing(instances, people, prefsByChore, mechanism, prefsByInstance);
+
+  // Allocation-based receipts per (week, roommate): positive = a doer owed money,
+  // negative = a pivotal Clarke payer who owes the house now. Failed / not-worth-
+  // doing chores are skipped (no allocation, so no entitlement).
+  const receiptsByWeek = new Map<string, Map<number, number>>();
+  for (const instance of instances) {
+    const ledger = ledgerForInstance(instance, people, prefsByChore, mechanism, prefsByInstance);
+    if (ledger.displayStatus === 'failed' || ledger.displayStatus === 'skipped') continue;
+    const week = instance.week_start ?? '';
+    const into = receiptsByWeek.get(week) ?? new Map<number, number>();
+    for (const [id, amount] of Object.entries(ledger.payments)) {
+      const rid = Number(id);
+      into.set(rid, (into.get(rid) ?? 0) - amount); // -payment = receipt
+    }
+    receiptsByWeek.set(week, into);
+  }
+
+  const queue: { id: number; amount: number }[] = []; // outstanding cash IOUs, oldest first
+  let cash = 0; // house cash reserve carried between weeks
+  let notional = 0; // notional house balance (+ owe / deficit, - surplus); uncapped
+  const out = new Map<string, WeekCashflow>();
+
+  for (const week of [...schedule.keys()].sort()) {
+    const wk = schedule.get(week)!;
+    const members = membersForWeek(people, week);
+    const net = new Map<number, number>(members.map((m) => [m.id, 0]));
+    const credit = (id: number, delta: number) => net.set(id, (net.get(id) ?? 0) + delta);
+
+    // 1. Book this week's allocated entitlements. Doers join the IOU queue; pivotal
+    //    Clarke payers settle in cash immediately. Track the week's net deficit.
+    let weekDeficit = 0;
+    for (const [id, receipt] of receiptsByWeek.get(week) ?? []) {
+      weekDeficit += receipt;
+      if (receipt > 0) queue.push({ id, amount: receipt });
+      else if (receipt < 0) {
+        credit(id, receipt);
+        cash += -receipt;
+      }
+    }
+
+    // 2. Notional: assess the full marked-up levy whether or not cash is collected.
+    notional += weekDeficit - wk.levyCents;
+
+    // 3. Cash: collect only enough to cover the outstanding IOUs, never more, and
+    //    never faster than the marked-up levy. Split equally across members.
+    const outstanding = queue.reduce((s, iou) => s + iou.amount, 0);
+    const cashLevy = Math.min(wk.levyCents, Math.max(0, outstanding - cash));
+    const cashPerMember = members.length ? Math.round(cashLevy / members.length) : 0;
+    for (const m of members) {
+      credit(m.id, -cashPerMember);
+      cash += cashPerMember;
+    }
+
+    // 4. Pay the house's oldest IOUs from whatever cash it now holds.
+    while (cash > 0 && queue.length) {
+      const iou = queue[0];
+      const pay = Math.min(cash, iou.amount);
+      iou.amount -= pay;
+      cash -= pay;
+      credit(iou.id, pay);
+      if (iou.amount <= 0) queue.shift();
+    }
+
+    out.set(week, { byRoommate: net, houseDeficitCents: notional, settled: wk.settled });
+  }
+  return out;
+}
+
 // Only 'done' instances pay out. Nets are summed per roommate (membership is
 // handled inside ledgerForInstance); recorded settle-up payments then move money
 // between roommates without touching the house. The house is the counterparty
