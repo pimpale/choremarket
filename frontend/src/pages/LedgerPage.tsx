@@ -20,6 +20,12 @@ function distinctivePrefixes(names: string[]): string[] {
   });
 }
 
+// ISO "YYYY-MM-DD" -> "MM/DD/YYYY", matching the native date picker's display.
+function formatWeekLabel(iso: string): string {
+  const [year, month, day] = iso.split('-');
+  return `${month}/${day}/${year}`;
+}
+
 const CADENCES = [
   { value: 'weekly', label: 'Weekly' },
   { value: 'monthly', label: 'Monthly' },
@@ -696,7 +702,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     const isCurrent = group.week === data.current_week;
     const weekCell = (
       <td rowSpan={span} className={`week-cell ${weekCellClass(group.week)}`}>
-        <div className="week-date">{group.week}</div>
+        <div className="week-date">{formatWeekLabel(group.week)}</div>
         {isCurrent ? <span className="week-flag">This week</span> : null}
         {group.week === data.upcoming_week ? <span className="week-flag">Next week</span> : null}
         {isCurrent ? (
@@ -742,7 +748,6 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   }
 
   return (
-    <div className="ledger-shell">
       <div className="ledger-scroll" ref={scrollRef}>
         <Table size="sm" className="align-middle ledger-table sheet mb-0">
           <thead>
@@ -880,8 +885,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
           </thead>
           {groups.map(renderGroup)}
         </Table>
-      </div>
-      <Modal show={!!recurringModal} onHide={() => setRecurringModal(null)} centered size="lg">
+              <Modal show={!!recurringModal} onHide={() => setRecurringModal(null)} centered size="lg">
         <Modal.Header closeButton>
           <Modal.Title>
             {recurringModal?.kind === 'recurring' ? `Recurring chore: ${recurringModal?.name ?? ''}` : 'Configure chore row'}
@@ -1082,6 +1086,6 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
           </Button>
         </Modal.Footer>
       </Modal>
-    </div>
+      </div>
   );
 }

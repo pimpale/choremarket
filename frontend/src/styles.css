@@ -247,16 +247,6 @@ h2 {
     min-width: 240px;
   }
 }
-
-/* ---- Full-bleed spreadsheet ledger ---- */
-.ledger-shell {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-  padding: 10px 16px 0;
-}
-
 .ledger-toolbar {
   align-items: center;
   display: flex;
@@ -269,9 +259,6 @@ h2 {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #ffffff;
 }
 
 .ledger-table.sheet {
@@ -331,7 +318,6 @@ h2 {
   border-radius: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
-  height: 34px;
   /* Match the 14px static cells; the form-control default (16px) reads larger. */
   font-size: 14px;
   padding: 2px 8px !important;
@@ -340,6 +326,13 @@ h2 {
 .sheet-input:focus {
   border-color: var(--accent) !important;
   background: #fffef9 !important;
+}
+
+/* The date picker reads a touch large next to the static cells; nudge it down.
+   No horizontal padding so it sits flush like the other cells' content. */
+.sheet-input[type='date'] {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
 }
 
 .ledger-table.sheet td.num .money-input.sheet-input {
@@ -409,6 +402,7 @@ h2 {
 
 .week-date {
   font-variant-numeric: tabular-nums;
+  font-size: 12px;
 }
 
 .week-flag {

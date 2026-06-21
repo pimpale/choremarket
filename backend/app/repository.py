@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import random
 import sqlite3
+from dataclasses import dataclass
 from datetime import date, timedelta
 
 from .db import connect
@@ -13,14 +15,15 @@ CADENCES = {"weekly", "monthly", "ad-hoc"}
 EXAMPLE_ROOMMATES = ("Alex", "Blair", "Casey")
 
 MOCK_ROOMMATES = ("Matthew", "Govind", "Blaine", "Emerson", "Nathan")
+# (name, description, cadence). These mirror the real chores our house ran.
 MOCK_RECURRING_CHORES = [
-    ("Monday Trash", "Take out Monday trash"),
-    ("Thursday Trash + Recycle", "Take out Thursday trash and recycling"),
-    ("Putting away dishes", "Empty and reload the dishwasher as needed"),
-    ("Kitchen surfaces", "Wipe counters, stove, and dining table"),
-    ("Vacuum/sweep downstairs", "Vacuum and sweep downstairs and the stairs"),
-    ("Clean kitchen sink", "Scrub and clean the kitchen sink"),
-    ("Clean microwave", "Wipe down the microwave inside and out"),
+    ("Trash & Recycling", "Monday trash plus Thursday trash and recycling", "weekly"),
+    ("Putting away dishes", "Empty and reload the dishwasher as needed", "weekly"),
+    ("Kitchen surfaces", "Wipe counters, stove, and dining table", "weekly"),
+    ("Vacuum/sweep downstairs", "Vacuum and sweep downstairs and the stairs", "weekly"),
+    ("Clean kitchen sink", "Scrub and clean the kitchen sink", "monthly"),
+    ("Clean microwave", "Wipe down the microwave inside and out", "monthly"),
+    ("Clean bathrooms", "Shower, toilet, counter, floor, and drain in every bathroom", "monthly"),
 ]
 
 
@@ -861,17 +864,164 @@ def week_from_string(value: str) -> str:
 
 # --------------------------------------------------------------------------- #
 # Mock data
+#
+# The mock world is grounded in ~two months of our house's real spreadsheet.
+# Because the economic model stores a single week-independent wtp/bid per
+# (roommate, recurring chore) and re-derives every week's assignee + transfers
+# on the client, we collapse the real history into one representative pref per
+# roommate per chore. The numbers below are generated, not hand-typed, so the
+# whole world can be regenerated under different assumptions (see
+# ``MockAssumptions``) -- e.g. to stress-test the mechanism with fussier
+# roommates or higher asks.
 # --------------------------------------------------------------------------- #
-def _mock_preference(roommate_name: str, chore_name: str) -> tuple[int, int]:
-    base = 800 + (sum(map(ord, chore_name)) % 9) * 100
-    offset = (sum(map(ord, roommate_name)) % 5) * 75
-    wtp = base + offset
-    bid = wtp + 300 + (sum(map(ord, roommate_name + chore_name)) % 6) * 100
-    return wtp, bid
+
+# Real winning asks from the spreadsheet, in whole dollars, in chronological
+# order. These are treated as the *true* asks of the roommates who actually did
+# each chore; every other roommate's ask is generated strictly higher, so the
+# people who really did the work stay the lowest bidders (and thus the doers).
+REAL_BIDS: dict[str, dict[str, list[int]]] = {
+    "Trash & Recycling": {"Matthew": [6, 12, 12, 13, 13, 13, 13], "Nathan": [19]},
+    "Putting away dishes": {
+        "Matthew": [8, 13, 15],
+        "Blaine": [16, 14, 14],
+        "Govind": [11, 13, 13],
+    },
+    "Kitchen surfaces": {"Matthew": [7, 10, 10, 12, 12, 12, 6], "Nathan": [7]},
+    "Vacuum/sweep downstairs": {"Govind": [13, 13, 13, 13, 13, 13], "Nathan": [11]},
+    "Clean kitchen sink": {"Matthew": [3]},
+    "Clean microwave": {"Matthew": [3, 6]},
+    "Clean bathrooms": {"Matthew": [51]},  # does all three at $11 + $18 + $22
+}
+
+# Per-person *willingness to pay* for each chore actually getting done, in whole
+# dollars. Grounded by the user: dishes ~ $20/person (the paper-plate ceiling of
+# ~$80/wk across ~4 people), trash ~1.5x that, microwave only ~$5, everything
+# else below dishes. Scaled per-person by a "cleanliness standard" factor below.
+CHORE_WTP: dict[str, int] = {
+    "Trash & Recycling": 30,
+    "Putting away dishes": 20,
+    "Kitchen surfaces": 12,
+    "Vacuum/sweep downstairs": 10,
+    "Clean kitchen sink": 5,
+    "Clean microwave": 5,
+    "Clean bathrooms": 18,
+}
 
 
-def reset_mock_data(today: date | None = None) -> None:
+@dataclass
+class MockAssumptions:
+    """Knobs for regenerating the mock world. Everything is seeded, so a given
+    set of assumptions produces a deterministic world."""
+
+    seed: int = 20260621
+    history_weeks: int = 8
+    nathan_join: str = "2026-06-01"
+    # A non-doer's ask sits this fraction above the highest *real* ask for the
+    # chore, so real doers always remain the cheapest bidder.
+    competitor_premium: tuple[float, float] = (0.10, 0.30)
+    # Per-person multipliers, drawn once and reused across every chore so a
+    # person's standards/asks are correlated. cleanliness scales WTP (fussier =
+    # values clean more); reluctance is extra ask premium (hates chores = asks
+    # more everywhere).
+    cleanliness_sigma: float = 0.22
+    reluctance_sigma: float = 0.15
+    # Idiosyncratic noise on each individual number.
+    wtp_noise: float = 0.12
+    bid_noise: float = 0.08
+    # Asks drifted up over the season; weight later observations more when
+    # collapsing the history into one representative ask.
+    recency_bias: float = 0.6
+    # Chance a past-week chore was simply left undone (-> failed status).
+    fail_rate: float = 0.08
+
+
+def _recency_weighted_mean(values: list[int], recency_bias: float) -> float:
+    """Mean that weights later (more recent) observations more heavily."""
+    n = len(values)
+    if n == 1:
+        return float(values[0])
+    weights = [1.0 + recency_bias * (i / (n - 1)) for i in range(n)]
+    return sum(v * w for v, w in zip(values, weights)) / sum(weights)
+
+
+def generate_preferences(
+    assumptions: MockAssumptions,
+    rng: random.Random,
+) -> dict[str, dict[str, tuple[int, int]]]:
+    """Build {chore_name: {roommate_name: (wtp_cents, bid_cents)}}.
+
+    Real doers keep (a noisy version of) their real asks; every other roommate
+    bids strictly above the priciest real ask. WTP is anchored per chore and
+    scaled by each person's cleanliness standard.
+    """
+    cleanliness = {
+        name: max(0.5, rng.gauss(1.0, assumptions.cleanliness_sigma))
+        for name in MOCK_ROOMMATES
+    }
+    # Re-center so the *population* averages the chore WTP anchors (different
+    # standards, but the house as a whole values cleaning at the grounded level).
+    mean_clean = sum(cleanliness.values()) / len(cleanliness)
+    cleanliness = {name: factor / mean_clean for name, factor in cleanliness.items()}
+    # Non-negative extra ask premium per person, correlated across all chores.
+    reluctance = {
+        name: max(0.0, rng.gauss(0.0, assumptions.reluctance_sigma))
+        for name in MOCK_ROOMMATES
+    }
+
+    prefs: dict[str, dict[str, tuple[int, int]]] = {}
+    for name, _desc, _cadence in MOCK_RECURRING_CHORES:
+        observed = REAL_BIDS.get(name, {})
+        observed_mean = {
+            person: _recency_weighted_mean(vals, assumptions.recency_bias)
+            for person, vals in observed.items()
+        }
+        # Anchor competitors above the priciest real doer so real doers stay
+        # cheapest. With no observations, fall back to half the chore's WTP.
+        anchor = max(observed_mean.values()) if observed_mean else CHORE_WTP[name] * 0.5
+
+        chore_prefs: dict[str, tuple[int, int]] = {}
+        for person in MOCK_ROOMMATES:
+            if person in observed_mean:
+                ask = observed_mean[person] * (1 + rng.gauss(0, assumptions.bid_noise))
+            else:
+                premium = rng.uniform(*assumptions.competitor_premium) + reluctance[person]
+                ask = anchor * (1 + premium)
+            ask = max(1.0, ask)
+
+            wtp = (
+                CHORE_WTP[name]
+                * cleanliness[person]
+                * (1 + rng.gauss(0, assumptions.wtp_noise))
+            )
+            wtp = max(1.0, wtp)
+
+            chore_prefs[person] = (round(wtp * 100), round(ask * 100))
+        prefs[name] = chore_prefs
+    return prefs
+
+
+# One-offs lifted from the spreadsheet: (name, description, assignee, dollars,
+# weeks_ago, status). ``weeks_ago`` counts back from the most recent completed
+# week (0 = most recent past week). Verizon appears twice: a fail then a retry.
+_MOCK_ONE_OFFS = [
+    ("Find a cleaning person", "Research and book a recurring cleaner", "Matthew", 20, 7, "done"),
+    ("Call Verizon about wifi", "Sort out the flaky wifi", "Govind", 0, 7, "failed"),
+    ("Buy and install TV on stand", "Mount the living-room TV", "Emerson", 20, 5, "done"),
+    ("Call Verizon about wifi (retry)", "Finally get the wifi fixed", "Govind", 0, 2, "done"),
+    ("Coordinate pressure washing + bush trimming", "Schedule the exterior cleanup", "Matthew", 25, 0, "done"),
+    ("Spend 15 min on the dishwasher", "Figure out why the dishwasher underperforms", "Matthew", 15, 0, "done"),
+]
+
+
+def reset_mock_data(
+    today: date | None = None,
+    assumptions: MockAssumptions | None = None,
+) -> None:
     today = today or date.today()
+    assumptions = assumptions or MockAssumptions()
+    rng = random.Random(assumptions.seed)
+    prefs = generate_preferences(assumptions, rng)
+
     with connect() as conn:
         conn.executescript(
             """
@@ -896,46 +1046,84 @@ def reset_mock_data(today: date | None = None) -> None:
         )
         # Nathan joined partway through: he shouldn't appear in weeks before this.
         conn.execute(
-            "UPDATE roommates SET join_date = '2026-06-01' WHERE name = 'Nathan'"
+            "UPDATE roommates SET join_date = ? WHERE name = 'Nathan'",
+            (assumptions.nathan_join,),
         )
         conn.executemany(
-            "INSERT INTO recurring_chores (name, description) VALUES (?, ?)",
+            "INSERT INTO recurring_chores (name, description, cadence) VALUES (?, ?, ?)",
             MOCK_RECURRING_CHORES,
         )
 
-    roommates = active_roommates()
-    chores = active_recurring_chores()
-    for roommate in roommates:
-        for chore in chores:
-            wtp, bid = _mock_preference(roommate["name"], chore["name"])
-            save_preference(roommate["id"], chore["id"], wtp, bid)
+    roommate_id = {r["name"]: r["id"] for r in active_roommates()}
+    chore_id = {c["name"]: c["id"] for c in active_recurring_chores()}
+    for chore_name, by_person in prefs.items():
+        for person, (wtp, bid) in by_person.items():
+            save_preference(roommate_id[person], chore_id[chore_name], wtp, bid)
 
     cur = current_week(today)
-    past_weeks = [cur - timedelta(days=7 * k) for k in range(3, 0, -1)]
+    past_weeks = [
+        cur - timedelta(days=7 * k) for k in range(assumptions.history_weeks, 0, -1)
+    ]
     for week in past_weeks + [cur, upcoming_week(today)]:
         spawn_week(week.isoformat())
 
-    # Mark the three completed weeks done, with a couple of realistic failures.
+    # Past weeks are settled history: each chore was either done or (per the
+    # user's rule -- no done check on any week but the last) left failed. The
+    # current and upcoming weeks stay pending.
     with connect() as conn:
         for week in past_weeks:
-            conn.execute(
-                "UPDATE chore_instances SET status = 'done' WHERE week_start = ?",
+            rows = conn.execute(
+                """
+                SELECT id FROM chore_instances
+                WHERE week_start = ? AND recurring_chore_id IS NOT NULL
+                """,
                 (week.isoformat(),),
+            ).fetchall()
+            for row in rows:
+                status = "failed" if rng.random() < assumptions.fail_rate else "done"
+                conn.execute(
+                    "UPDATE chore_instances SET status = ? WHERE id = ?",
+                    (status, row["id"]),
+                )
+        # Guarantee at least one visible failure (mirrors the real misses).
+        if past_weeks and not conn.execute(
+            "SELECT 1 FROM chore_instances WHERE status = 'failed'"
+        ).fetchone():
+            conn.execute(
+                """
+                UPDATE chore_instances SET status = 'failed'
+                WHERE id = (
+                    SELECT id FROM chore_instances
+                    WHERE week_start = ? AND name = 'Clean microwave'
+                    LIMIT 1
+                )
+                """,
+                (past_weeks[0].isoformat(),),
             )
-        conn.execute(
-            """
-            UPDATE chore_instances SET status = 'failed'
-            WHERE week_start = ? AND name = 'Clean microwave'
-            """,
-            (past_weeks[0].isoformat(),),
-        )
 
-    first_roommate = roommates[0]["id"]
-    one_off_id = add_one_off_instance(
+    # One-off tasks from the real spreadsheet.
+    def week_for(weeks_ago: int) -> date:
+        idx = -1 - weeks_ago
+        return past_weeks[idx] if -len(past_weeks) <= idx < 0 else past_weeks[0]
+
+    for name, description, assignee, dollars, weeks_ago, status in _MOCK_ONE_OFFS:
+        instance_id = add_one_off_instance(
+            name=name,
+            description=description,
+            week_start=week_for(weeks_ago).isoformat(),
+            assignee_id=None,
+            payout_cents=0,
+        )
+        set_manual_override(instance_id, roommate_id[assignee], dollars * 100)
+        if status != "pending":
+            set_instance_status(instance_id, status)
+
+    # A live one-off in the current week, still up for grabs.
+    bookshelf_id = add_one_off_instance(
         name="Assemble new bookshelf",
-        description="One-off: build the hallway bookshelf",
+        description="Build the hallway bookshelf",
         week_start=cur.isoformat(),
         assignee_id=None,
         payout_cents=0,
     )
-    set_manual_override(one_off_id, first_roommate, 2500)
+    set_manual_override(bookshelf_id, roommate_id["Matthew"], 2500)
