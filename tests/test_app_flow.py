@@ -58,6 +58,10 @@ def test_set_mechanism_rejects_unknown(fresh_db):
         repo.set_mechanism("bogus")
 
 
+def test_initial_roommates_match_mock_roommates(fresh_db):
+    assert [r["name"] for r in repo.active_roommates()] == sorted(repo.MOCK_ROOMMATES)
+
+
 # --------------------------------------------------------------------------- #
 # Spawning (raw instances only -- no assignee/transfer computed here)
 # --------------------------------------------------------------------------- #

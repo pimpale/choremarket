@@ -252,7 +252,48 @@ h2 {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  padding-bottom: 10px;
+}
+
+.ledger-toolbar.is-expanded {
+  padding: 10px 0 10px 12px;
+}
+
+.ledger-toolbar.is-collapsed {
+  min-height: 16px;
+  padding: 0;
+}
+
+.ledger-toolbar-collapsed-hit {
+  align-items: center;
+  background: #f7faf9;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  height: 16px;
+  justify-content: center;
+  padding: 0;
+  width: 100%;
+}
+
+.ledger-toolbar-collapsed-hit:hover {
+  background: #edf5f1;
+  color: var(--ink);
+}
+
+.ledger-toolbar-collapse-btn {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.ledger-export-btn {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
 }
 
 .ledger-scroll {
@@ -593,6 +634,12 @@ h2 {
   text-align: right;
   font-variant-numeric: tabular-nums;
   background: #fbfaf6;
+}
+
+/* Household-weekly financing figures: one tall cell spanning the week's rows.
+   Styling otherwise matches its neighbours so it blends into the row shading. */
+.ledger-table.sheet td.mech-data-cell.fin-week-cell {
+  vertical-align: middle;
 }
 
 .ledger-table.sheet td.mech-oneoff-cell {

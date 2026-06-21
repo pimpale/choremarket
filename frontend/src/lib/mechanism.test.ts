@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   computeBalances,
+  computeFinancing,
   computeLedger,
   flatPayout,
   ledgerForInstance,
@@ -159,6 +160,68 @@ describe('balances', () => {
     const b = computeBalances([doneRecurring], people, prefsByChore, 'vcg');
     expect(b.houseCents).toBe(900);
     expect(b.nets.reduce((s, n) => s + n.net_cents, 0) + b.houseCents).toBe(0);
+  });
+});
+
+describe('EMA financing (with VCG)', () => {
+  // Blair is the doer, owed 900/week; the weekly house deficit is 900.
+  const prefsByChore = { 5: { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) } };
+  const week = (id: number, week_start: string): RawInstance => ({
+    id, recurring_chore_id: 5, assignee_id: null, status: 'done', payout_cents: 0, week_start,
+  });
+  const financed = (weeks: RawInstance[]) =>
+    computeBalances(weeks, people, prefsByChore, 'vcg', {}, [], 'ema');
+
+  it('matches plain VCG for a single week (no history -> no levy yet)', () => {
+    const b = financed([week(1, '2026-06-07')]);
+    const plain = computeBalances([week(1, '2026-06-07')], people, prefsByChore, 'vcg');
+    expect(b.nets).toEqual(plain.nets);
+    expect(b.houseCents).toBe(900);
+    expect(b.weeklyRateCents).toBe(Math.round(900 * 1.025)); // rate for next week
+  });
+
+  it('levies the marked-up EMA on later weeks and always conserves', () => {
+    const b = financed([week(1, '2026-06-07'), week(2, '2026-06-14'), week(3, '2026-06-21')]);
+    // Weeks 2 and 3 each levy round(900*1.025) -> per member; week 1 none.
+    const per = Math.round(Math.round(900 * 1.025) / 3);
+    expect(b.nets.find((n) => n.id === 1)?.net_cents).toBe(2 * per); // Alex: levy only
+    expect(b.nets.find((n) => n.id === 3)?.net_cents).toBe(2 * per); // Casey: levy only
+    // Blair: owed 2700 in entitlements, less her own two levies.
+    expect(b.nets.find((n) => n.id === 2)?.net_cents).toBe(-2700 + 2 * per);
+    // Conservation holds with the house as residual counterparty.
+    expect(b.nets.reduce((s, n) => s + n.net_cents, 0) + b.houseCents).toBe(0);
+  });
+
+  it('the markup erodes the deficit into a surplus over a long run', () => {
+    const weeks = Array.from({ length: 60 }, (_, k) =>
+      week(k + 1, new Date(Date.UTC(2026, 0, 4 + 7 * k)).toISOString().slice(0, 10)),
+    );
+    // Past the ~41-week break-even, over-collection shows up as a house surplus.
+    expect(financed(weeks).houseCents).toBeLessThan(0);
+  });
+
+  it('projects a levy for an unsettled week without collecting it yet', () => {
+    const done = [week(1, '2026-06-07'), week(2, '2026-06-14')];
+    const pending: RawInstance = { ...week(3, '2026-06-21'), status: 'pending' };
+
+    const { schedule } = computeFinancing([...done, pending], people, prefsByChore, 'vcg');
+    const thisWeek = schedule.get('2026-06-21')!;
+    // Known from history (trailing EMA), but flagged as not-yet-collected.
+    expect(thisWeek.settled).toBe(false);
+    expect(thisWeek.levyCents).toBe(Math.round(900 * 1.025));
+    expect(thisWeek.perMemberCents).toBe(Math.round(Math.round(900 * 1.025) / 3));
+
+    // The pending week's projected levy must not change anyone's balance.
+    const withPending = financed([...done, pending]);
+    const settledOnly = financed(done);
+    expect(withPending.nets).toEqual(settledOnly.nets);
+    expect(withPending.houseCents).toBe(settledOnly.houseCents);
+  });
+
+  it('financing off leaves the textbook VCG deficit untouched', () => {
+    const b = computeBalances([week(1, '2026-06-07'), week(2, '2026-06-14')], people, prefsByChore, 'vcg');
+    expect(b.houseCents).toBe(1800);
+    expect(b.weeklyRateCents).toBe(0);
   });
 });
 

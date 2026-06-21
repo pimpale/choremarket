@@ -1,9 +1,9 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight } from 'react-bootstrap-icons';
+import { Download, ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from 'react-bootstrap-icons';
 import { Alert, Button, Form, Modal, ProgressBar, Tab, Table, Tabs } from 'react-bootstrap';
 
 import { api, cents, centsToDollars, dollarsToCents, paymentClass, useAsync } from '../lib/api';
-import { ledgerForInstance, membersForWeek, type InstanceLedger, type Person, type RawInstance } from '../lib/mechanism';
+import { computeFinancing, ledgerForInstance, membersForWeek, type InstanceLedger, type Person, type RawInstance } from '../lib/mechanism';
 
 // Shortest prefix of each name that's still unique among the others, e.g.
 // ["Bob", "Rob", "Ronald"] -> ["B", "Rob", "Ron"].
@@ -26,6 +26,24 @@ function formatWeekLabel(iso: string): string {
   return `${month}/${day}/${year}`;
 }
 
+function csvCell(value: unknown): string {
+  const text = value == null ? '' : String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function downloadCsv(filename: string, rows: unknown[][]) {
+  const csv = rows.map((row) => row.map(csvCell).join(',')).join('\n');
+  const blob = new Blob([`${csv}\n`], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 const CADENCES = [
   { value: 'weekly', label: 'Weekly' },
   { value: 'monthly', label: 'Monthly' },
@@ -41,6 +59,8 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
 
   const [showPrefs, setShowPrefs] = useState(false);
   const [showMech, setShowMech] = useState(false);
+  const [showFin, setShowFin] = useState(false);
+  const [toolbarOpen, setToolbarOpen] = useState(false);
   const [openRoommates, setOpenRoommates] = useState<Set<number>>(() => new Set());
   const [recurringModal, setRecurringModal] = useState<any>(null);
   const instances = data?.instances || [];
@@ -54,6 +74,10 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   const prefsByChore = data?.preferences_by_chore || {};
   const prefsByInstance = data?.preferences_by_instance || {};
   const mechanism = data?.mechanism || 'agv';
+  const financing = data?.financing || 'none';
+  const vcgLike = mechanism === 'vcg';
+  // The Financing column only exists when EMA financing is on.
+  const finActive = financing === 'ema';
   const people: Person[] = allRoommates.map((r: any) => ({
     id: r.id,
     name: r.name,
@@ -85,6 +109,11 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   );
   const ledgerOf = (instance: any): InstanceLedger =>
     ledgers.get(instance.id) ?? { assigneeId: null, surplusCents: 0, worthDoing: true, payments: {}, displayStatus: 'pending' };
+
+  // The per-week EMA financing schedule (only the settled weeks carry a levy).
+  const finSchedule = finActive
+    ? computeFinancing(instances.map(rawOf), people, prefsByChore, mechanism, prefsByInstance).schedule
+    : new Map();
 
   function assigneeNetCents(instance: any): number | null {
     const ledger = ledgerOf(instance);
@@ -274,6 +303,58 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     bump();
   }
 
+  function exportLedgerCsv() {
+    const prefHeaders = roommates.flatMap((roommate: any) => [
+      `${roommate.name} WTP`,
+      `${roommate.name} Bid`,
+    ]);
+    const rows: unknown[][] = [
+      [
+        'Week',
+        'Due',
+        'Chore',
+        'Description',
+        'Type',
+        'Assignee',
+        'Transfer',
+        'Status',
+        'Done',
+        'Failed',
+        ...prefHeaders,
+      ],
+    ];
+
+    for (const instance of instances) {
+      const ledger = ledgerOf(instance);
+      const net = assigneeNetCents(instance);
+      const prefValues = roommates.flatMap((roommate: any) => {
+        const pref = instance.is_one_off
+          ? (prefsByInstance[instance.id] || {})[roommate.id]
+          : (prefsByChore[instance.recurring_chore_id] || {})[roommate.id];
+        if (instance.manual_override) return ['', ''];
+        return [
+          pref?.wtp_cents == null ? '' : cents(pref.wtp_cents),
+          pref?.bid_cents == null ? '' : cents(pref.bid_cents),
+        ];
+      });
+      rows.push([
+        instance.week_start,
+        instance.due_date,
+        instance.name,
+        instance.description,
+        instance.is_one_off ? (instance.manual_override ? 'manual override' : 'one-off') : 'recurring',
+        ledger.assigneeId == null ? '' : nameById.get(ledger.assigneeId) ?? ledger.assigneeId,
+        net == null ? '' : cents(net),
+        ledger.displayStatus,
+        instance.status === 'done' ? 'yes' : '',
+        instance.status === 'failed' ? 'yes' : '',
+        ...prefValues,
+      ]);
+    }
+
+    downloadCsv(`choremarket-ledger-${data.current_week}.csv`, rows);
+  }
+
   // Group instances by week so each week renders one merged cell. Always show
   // the current and upcoming weeks (even if empty) since they take add rows.
   const groupsByWeek = new Map<string, { week: string; rows: any[] }>();
@@ -303,7 +384,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     ? roommates.reduce((acc: number, roommate: any) => acc + (isOpen(roommate.id) ? 2 : 1), 0)
     : 1;
   const mechanismColumns =
-    mechanism === 'vcg'
+    vcgLike
       ? [
           { key: 'total-wtp', label: 'Total WTP' },
           { key: 'lowest-bid', label: 'Lowest bid' },
@@ -327,7 +408,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
           })),
         ];
   const mechanismGroups =
-    mechanism === 'vcg'
+    vcgLike
       ? [
           { label: 'Inputs', colSpan: 3 },
           { label: 'VCG price', colSpan: 3 },
@@ -339,9 +420,21 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
           ...(roommates.length ? [{ label: 'Transfers', colSpan: roommates.length }] : []),
         ];
   const mechCols = showMech ? mechanismColumns.length : 1;
+  const financingColumns = [
+    { key: 'fin-deficit', label: 'Deficit' },
+    { key: 'fin-ema', label: 'EMA' },
+    { key: 'fin-levy', label: 'Levy' },
+    { key: 'fin-share', label: 'Per head' },
+  ];
+  const financingGroups = [
+    { label: 'This chore', colSpan: 1 },
+    { label: 'Weekly levy', colSpan: 3 },
+  ];
+  // 0 columns when financing is off; otherwise the collapsible block (1 edge / full).
+  const finCols = finActive ? (showFin ? financingColumns.length : 1) : 0;
   // Fixed data columns (Due, Chore, Transfer, Done, Failed, delete),
-  // plus the collapsible WTP/Bid and Mechanism blocks.
-  const addColSpan = 6 + prefCols + mechCols;
+  // plus the collapsible WTP/Bid, Mechanism, and Financing blocks.
+  const addColSpan = 6 + prefCols + mechCols + finCols;
 
   // Reconstruct the per-roommate bids/WTP for the chore from the prefs grid,
   // limited to the roommates who participate in this instance's week.
@@ -364,12 +457,21 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   function mechValueCell(
     key: string,
     value: React.ReactNode,
-    opts: { tip: string; valueClass?: string; partyLabel?: string; subLabel?: string; start?: boolean } = { tip: '' },
+    opts: {
+      tip: string;
+      valueClass?: string;
+      partyLabel?: string;
+      subLabel?: string;
+      start?: boolean;
+      rowSpan?: number;
+      extraClass?: string;
+    } = { tip: '' },
   ) {
     return (
       <td
         key={key}
-        className={`num mech-data-cell${opts.start ? ' mech-cell-start' : ''}`}
+        rowSpan={opts.rowSpan}
+        className={`num mech-data-cell${opts.start ? ' mech-cell-start' : ''}${opts.extraClass ? ` ${opts.extraClass}` : ''}`}
         title={opts.tip}
       >
         {opts.partyLabel ? <span className="mech-cell-party">{opts.partyLabel}</span> : null}
@@ -448,7 +550,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     // House = whatever the roommate transfers don't cover (zero under AGV).
     const house = -Object.values(ledger.payments).reduce((sum: number, amount) => sum + amount, 0);
 
-    if (mechanism === 'vcg') {
+    if (vcgLike) {
       const doerNet = -paymentOf(doer.id);
       return [
         mechValueCell('total-wtp', cents(totalWtp), { tip: wtpTip, start: true }),
@@ -517,7 +619,57 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     );
   }
 
-  function dataCells(instance: any) {
+  // Financing block: a per-chore Deficit column, then the household-weekly EMA
+  // levy that amortizes it. The levy/EMA/share figures are one-per-week, so they
+  // render as a single tall cell spanning the week's rows (only on the first row;
+  // later rows are covered by the rowSpan). They are blank until the week settles.
+  function financingCells(instance: any, ledger: InstanceLedger, rowIndex: number, weekRows: number) {
+    const house = -Object.values(ledger.payments).reduce((sum: number, amount) => sum + amount, 0);
+    const deficitCell = mechValueCell('fin-deficit', cents(house), {
+      valueClass: paymentClass(house),
+      start: true,
+      tip: 'This chore’s house shortfall — the part no roommate pays for. EMA financing pools these across the week and amortizes them instead of letting the house absorb them.',
+    });
+    // Later rows fall under the first row's rowSpan for the weekly columns.
+    if (rowIndex > 0) return [deficitCell];
+
+    const week = finSchedule.get(instance.week_start);
+    // An unsettled week (this/next week) still has a known levy from past weeks;
+    // flag it 'projected' since it isn't collected until the week settles.
+    const projected = week ? !week.settled : false;
+    const weekCell = (key: string, value: string | null, tip: string, partyLabel?: string, subLabel?: string) =>
+      mechValueCell(key, value ?? '—', {
+        tip,
+        rowSpan: weekRows,
+        extraClass: 'fin-week-cell',
+        partyLabel: value == null ? undefined : partyLabel,
+        subLabel: value == null ? undefined : subLabel,
+        valueClass: value == null ? 'muted-value' : key === 'fin-share' ? 'pay' : undefined,
+      });
+    return [
+      deficitCell,
+      weekCell(
+        'fin-ema',
+        week ? cents(week.emaRateCents) : null,
+        'Smoothed weekly house deficit from prior weeks (an EMA over all chores). It sets this week’s levy and ignores the current week, so shading a single chore can’t move it.',
+      ),
+      weekCell(
+        'fin-levy',
+        week ? cents(week.levyCents) : null,
+        'What the household funds this week = EMA × 1.025 (a 2.5% markup so we drift toward a small, burnable surplus rather than a deficit). $0 the first settled week; doers are paid from this over the following weeks.',
+        undefined,
+        projected ? 'projected' : undefined,
+      ),
+      weekCell(
+        'fin-share',
+        week ? cents(week.perMemberCents) : null,
+        'Each member’s equal share of this week’s levy — same for everyone regardless of valuation, the doer included.',
+        week ? `${week.memberCount} ${week.memberCount === 1 ? 'roommate' : 'roommates'}` : undefined,
+      ),
+    ];
+  }
+
+  function dataCells(instance: any, rowIndex = 0, weekRows = 1) {
     const draft = drafts[instance.id] || {};
     const ledger = ledgerOf(instance);
     const net = assigneeNetCents(instance);
@@ -658,6 +810,13 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         ) : (
           <td className="mech-edge" />
         )}
+        {finActive ? (
+          showFin ? (
+            financingCells(instance, ledger, rowIndex, weekRows)
+          ) : rowIndex === 0 ? (
+            <td className="mech-edge" rowSpan={weekRows} />
+          ) : null
+        ) : null}
         <td className="text-center">
           <Form.Check
             type="checkbox"
@@ -727,7 +886,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         }
       >
         {index === 0 ? weekCell : null}
-        {dataCells(instance)}
+        {dataCells(instance, index, group.rows.length)}
       </tr>
       );
     });
@@ -748,6 +907,44 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   }
 
   return (
+    <>
+      <div className={`ledger-toolbar ${toolbarOpen ? 'is-expanded' : 'is-collapsed'}`}>
+        {toolbarOpen ? (
+          <>
+            <Button
+              type="button"
+              variant="outline-secondary"
+              size="sm"
+              className="ledger-toolbar-collapse-btn"
+              onClick={() => setToolbarOpen(false)}
+              aria-label="Collapse ledger toolbar"
+              title="Collapse ledger toolbar"
+            >
+              <ChevronUp size={15} />
+            </Button>
+            <Button
+              type="button"
+              variant="outline-secondary"
+              size="sm"
+              className="ledger-export-btn"
+              onClick={exportLedgerCsv}
+            >
+              <Download size={15} />
+              Export CSV
+            </Button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="ledger-toolbar-collapsed-hit"
+            onClick={() => setToolbarOpen(true)}
+            aria-label="Show ledger toolbar"
+            title="Show ledger toolbar"
+          >
+            <ChevronDown size={13} />
+          </button>
+        )}
+      </div>
       <div className="ledger-scroll" ref={scrollRef}>
         <Table size="sm" className="align-middle ledger-table sheet mb-0">
           <thead>
@@ -810,6 +1007,35 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
                   </span>
                 </th>
               )}
+              {finActive ? (
+                showFin ? (
+                  <th
+                    colSpan={finCols}
+                    className="mech-section-th"
+                    title="Hide financing detail"
+                    onClick={() => setShowFin(false)}
+                  >
+                    <span className="prefs-label">
+                      <ChevronRight size={11} />
+                      Financing
+                      <ChevronLeft size={11} />
+                    </span>
+                  </th>
+                ) : (
+                  <th
+                    rowSpan={3}
+                    className="mech-edge-th"
+                    title="Show financing detail"
+                    onClick={() => setShowFin(true)}
+                  >
+                    <span className="prefs-label collapsed">
+                      <ChevronLeft size={11} />
+                      FIN
+                      <ChevronRight size={11} />
+                    </span>
+                  </th>
+                )
+              ) : null}
               <th rowSpan={3} className="text-center">Done</th>
               <th rowSpan={3} className="text-center">Failed</th>
               <th rowSpan={3} aria-label="delete"></th>
@@ -859,6 +1085,17 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
                     </th>
                   ))
                 : null}
+              {finActive && showFin
+                ? financingGroups.map((group, index) => (
+                    <th
+                      key={group.label}
+                      colSpan={group.colSpan}
+                      className={`mech-group${index === 0 ? ' mech-cell-start' : ''}`}
+                    >
+                      {group.label}
+                    </th>
+                  ))
+                : null}
             </tr>
             <tr>
               {showPrefs
@@ -873,6 +1110,16 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
                 : null}
               {showMech
                 ? mechanismColumns.map((column, index) => (
+                    <th
+                      key={column.key}
+                      className={`num mech-sub${index === 0 ? ' mech-cell-start' : ''}`}
+                    >
+                      {column.label}
+                    </th>
+                  ))
+                : null}
+              {finActive && showFin
+                ? financingColumns.map((column, index) => (
                     <th
                       key={column.key}
                       className={`num mech-sub${index === 0 ? ' mech-cell-start' : ''}`}
@@ -1087,5 +1334,6 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         </Modal.Footer>
       </Modal>
       </div>
+    </>
   );
 }

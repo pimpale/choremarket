@@ -6,15 +6,15 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from .db import connect
+from .mock_data import MOCK_ROOMMATES
 from .weeks import current_week, due_date_for, upcoming_week
 
 
 VALID_STATUSES = {"pending", "done", "failed"}
 MECHANISMS = {"agv", "vcg"}
+FINANCINGS = {"none", "ema"}
 CADENCES = {"weekly", "monthly", "ad-hoc"}
-EXAMPLE_ROOMMATES = ("Alex", "Blair", "Casey")
 
-MOCK_ROOMMATES = ("Matthew", "Govind", "Blaine", "Emerson", "Nathan")
 # (name, description, cadence). These mirror the real chores our house ran.
 MOCK_RECURRING_CHORES = [
     ("Trash & Recycling", "Monday trash plus Thursday trash and recycling", "weekly"),
@@ -63,6 +63,20 @@ def set_mechanism(value: str) -> str:
     return value
 
 
+def get_financing() -> str:
+    value = get_setting("financing", "none")
+    return value if value in FINANCINGS else "none"
+
+
+def set_financing(value: str) -> str:
+    """Persist the financing policy (orthogonal to the mechanism). Like the
+    mechanism, the levy itself is derived on the client."""
+    if value not in FINANCINGS:
+        raise ValueError(f"Unknown financing: {value!r}")
+    set_setting("financing", value)
+    return value
+
+
 # --------------------------------------------------------------------------- #
 # Roommates
 # --------------------------------------------------------------------------- #
@@ -100,11 +114,6 @@ def add_roommate(name: str, join_date: str | None = None) -> None:
                 "INSERT INTO roommates (name, join_date) VALUES (?, ?)",
                 (clean, join),
             )
-
-
-def add_example_roommates() -> None:
-    for name in EXAMPLE_ROOMMATES:
-        add_roommate(name)
 
 
 def remove_roommate(roommate_id: int, leave_date: str | None = None) -> None:

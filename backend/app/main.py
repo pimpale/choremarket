@@ -129,7 +129,8 @@ class WeekPayload(BaseModel):
 
 
 class SettingsPayload(BaseModel):
-    mechanism: str
+    mechanism: str | None = None
+    financing: str | None = None
 
 
 # Path to the built frontend (produced by `npm run build`). Present in the
@@ -154,6 +155,7 @@ def api_state():
         "current_week": current_week().isoformat(),
         "upcoming_week": upcoming_week().isoformat(),
         "mechanism": repository.get_mechanism(),
+        "financing": repository.get_financing(),
         "roommates": [row_to_dict(row) for row in repository.all_roommates()],
         "active_roommates": [
             row_to_dict(row) for row in repository.active_roommates()
@@ -170,17 +172,26 @@ def api_state():
 # --------------------------------------------------------------------------- #
 @app.get("/api/settings")
 def api_settings():
-    return {"mechanism": repository.get_mechanism()}
+    return {
+        "mechanism": repository.get_mechanism(),
+        "financing": repository.get_financing(),
+    }
 
 
 @app.put("/api/settings")
 def api_save_settings(payload: SettingsPayload):
     try:
-        # Switching the mechanism re-derives every recurring instance under it.
-        repository.set_mechanism(payload.mechanism)
+        # Mechanism and financing are independent; update whichever was sent.
+        if payload.mechanism is not None:
+            repository.set_mechanism(payload.mechanism)
+        if payload.financing is not None:
+            repository.set_financing(payload.financing)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
-    return {"mechanism": repository.get_mechanism()}
+    return {
+        "mechanism": repository.get_mechanism(),
+        "financing": repository.get_financing(),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -219,7 +230,7 @@ def api_remove_roommate(roommate_id: int, leave_date: str | None = None):
 
 @app.post("/api/roommates/examples")
 def api_create_example_roommates():
-    repository.add_example_roommates()
+    repository.reset_mock_data()
     return api_roommates()
 
 
@@ -314,6 +325,7 @@ def api_ledger(week_start: str | None = None, assignee_id: int | None = None):
         "current_week": current_week().isoformat(),
         "upcoming_week": upcoming_week().isoformat(),
         "mechanism": repository.get_mechanism(),
+        "financing": repository.get_financing(),
         "instances": repository.all_instances(week_start, assignee_id),
         "roommates": [row_to_dict(row) for row in repository.all_roommates()],
         "recurring_chores": [

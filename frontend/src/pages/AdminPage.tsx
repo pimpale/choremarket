@@ -8,16 +8,29 @@ const MECHANISMS = [
   { value: 'vcg', label: 'VCG', hint: 'Vickrey–Clarke–Groves: the doer is paid the second-lowest bid; the house covers the resulting deficit.' },
 ];
 
+const FINANCINGS = [
+  { value: 'none', label: 'None', hint: 'The house absorbs any imbalance directly — $0 under AGV, a running deficit under VCG.' },
+  { value: 'ema', label: 'EMA', hint: 'Amortize the deficit instead of absorbing it: each settled week everyone pays a flat levy (a marked-up EMA of past deficits), which pays the doers down over the following weeks. The house never pays out of pocket and trends toward a small, burnable surplus.' },
+];
+
 export default function AdminPage({ bump }: { bump: () => void }) {
   const { data, setData, error } = useAsync(() => api('/api/roommates'), []);
   const settings = useAsync(() => api('/api/settings'), []);
   const [name, setName] = useState('');
 
   const mechanism = settings.data?.mechanism ?? 'agv';
+  const financing = settings.data?.financing ?? 'none';
 
   async function selectMechanism(value: string) {
     if (value === mechanism) return;
     const next = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ mechanism: value }) });
+    settings.setData(next);
+    bump();
+  }
+
+  async function selectFinancing(value: string) {
+    if (value === financing) return;
+    const next = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ financing: value }) });
     settings.setData(next);
     bump();
   }
@@ -87,6 +100,29 @@ export default function AdminPage({ bump }: { bump: () => void }) {
           </ButtonGroup>
         </div>
         <p className="mechanism-hint">{MECHANISMS.find((m) => m.value === mechanism)?.hint}</p>
+      </div>
+
+      <div className="mechanism-setting">
+        <div className="mechanism-heading">
+          <span className="mechanism-title">Financing</span>
+          <ButtonGroup>
+            {FINANCINGS.map((option) => (
+              <ToggleButton
+                key={option.value}
+                id={`financing-${option.value}`}
+                type="radio"
+                variant="outline-primary"
+                name="financing"
+                value={option.value}
+                checked={financing === option.value}
+                onChange={() => selectFinancing(option.value)}
+              >
+                {option.label}
+              </ToggleButton>
+            ))}
+          </ButtonGroup>
+        </div>
+        <p className="mechanism-hint">{FINANCINGS.find((f) => f.value === financing)?.hint}</p>
       </div>
 
       <Form onSubmit={addRoommate} className="toolbar">

@@ -7,6 +7,17 @@
 
 export type Mechanism = 'agv' | 'vcg';
 
+// Financing is orthogonal to the mechanism. 'none' lets the house absorb any VCG
+// deficit (the textbook behaviour); 'ema' amortizes that deficit with a flat
+// weekly levy so the house never pays out of pocket (see computeFinancing).
+export type Financing = 'none' | 'ema';
+
+// The levy each settled week is the EMA of past weekly deficits, marked up
+// slightly so we err toward a small (burnable) surplus rather than a deficit that
+// would strand unpaid doers at the end of a lease.
+const FINANCING_EMA_ALPHA = 0.5;
+const FINANCING_MARKUP = 1.025;
+
 export interface Pref {
   wtp_cents: number;
   bid_cents: number;
@@ -249,6 +260,78 @@ export interface Balances {
   nets: Net[];
   settlements: Settlement[];
   houseCents: number;
+  // 'ema' financing only: the levy each member owes for the next settled week (the
+  // marked-up EMA of past weekly deficits). 0 when financing is off.
+  weeklyRateCents: number;
+}
+
+// What 'ema' financing does to one week.
+export interface WeekFinancing {
+  deficitCents: number; // this week's aggregate house deficit (across all chores)
+  emaRateCents: number; // smoothed deficit from prior weeks -> this week's basis
+  levyCents: number; // marked-up amount the household funds this week (0 the first week)
+  perMemberCents: number; // levy split equally across this week's members
+  memberCount: number;
+  // True once the week has any settled (done) chore. The levy only depends on
+  // *prior* weeks, so an unsettled week (this week, next week) still has a known,
+  // projected levy -- but only settled weeks feed the EMA and count in balances.
+  settled: boolean;
+}
+
+export interface FinancingResult {
+  // Keyed by week_start; includes unsettled weeks (with a projected levy).
+  schedule: Map<string, WeekFinancing>;
+  // The marked-up trailing EMA: what the next settled week would levy.
+  nextRateCents: number;
+}
+
+// Walk every week oldest-first. Each week levies the marked-up EMA of *prior*
+// settled weeks' deficits (so the first settled week levies nothing); only a
+// settled week then folds its own deficit into the EMA. The levy is just
+// roommate->pot flow, so in computeBalances it slots into the existing
+// nets/settle() machinery: levy-payers become debtors that settle() pairs against
+// the doer-creditors, paying them out over subsequent weeks. The EMA tracks the
+// raw deficit; the markup biases toward a small surplus.
+export function computeFinancing(
+  instances: RawInstance[],
+  people: Person[],
+  prefsByChore: Record<number, Record<number, Pref>>,
+  mechanism: Mechanism,
+  prefsByInstance: Record<number, Record<number, NullablePref>> = {},
+): FinancingResult {
+  // Every week that has chores, plus the realized deficit from its settled ones.
+  const weeks = new Set<string>();
+  const deficitByWeek = new Map<string, number>();
+  for (const instance of instances) {
+    const week = instance.week_start ?? '';
+    weeks.add(week);
+    if (instance.status !== 'done') continue;
+    const { payments } = ledgerForInstance(instance, people, prefsByChore, mechanism, prefsByInstance);
+    const roommateFlow = Object.values(payments).reduce((s, a) => s + a, 0);
+    deficitByWeek.set(week, (deficitByWeek.get(week) ?? 0) - roommateFlow);
+  }
+
+  const schedule = new Map<string, WeekFinancing>();
+  let ema: number | null = null;
+  for (const week of [...weeks].sort()) {
+    const settled = deficitByWeek.has(week);
+    const levy = ema == null ? 0 : Math.max(0, Math.round(ema * FINANCING_MARKUP));
+    const members = membersForWeek(people, week);
+    schedule.set(week, {
+      deficitCents: deficitByWeek.get(week) ?? 0,
+      emaRateCents: ema == null ? 0 : Math.round(ema),
+      levyCents: levy,
+      perMemberCents: members.length ? Math.round(levy / members.length) : 0,
+      memberCount: members.length,
+      settled,
+    });
+    if (settled) {
+      const deficit = deficitByWeek.get(week) ?? 0;
+      ema = ema == null ? deficit : (1 - FINANCING_EMA_ALPHA) * ema + FINANCING_EMA_ALPHA * deficit;
+    }
+  }
+  const nextRateCents = ema == null ? 0 : Math.max(0, Math.round(ema * FINANCING_MARKUP));
+  return { schedule, nextRateCents };
 }
 
 // Only 'done' instances pay out. Nets are summed per roommate (membership is
@@ -262,6 +345,7 @@ export function computeBalances(
   mechanism: Mechanism,
   prefsByInstance: Record<number, Record<number, NullablePref>> = {},
   recordedPayments: RecordedPayment[] = [],
+  financing: Financing = 'none',
 ): Balances {
   const net: Record<number, number> = {};
   for (const p of people) net[p.id] = 0;
@@ -276,6 +360,22 @@ export function computeBalances(
     }
   }
 
+  // 'ema' financing: levy the marked-up EMA rate on each settled week's members.
+  // This is a roommate->pot flow, so it lifts roommateTotal and shrinks the house
+  // residual (the financing float) toward a small surplus over time.
+  let weeklyRateCents = 0;
+  if (financing === 'ema') {
+    const { schedule, nextRateCents } = computeFinancing(instances, people, prefsByChore, mechanism, prefsByInstance);
+    for (const [week, f] of schedule) {
+      if (!f.settled) continue; // an unsettled week shows a projected levy but isn't collected yet
+      for (const member of membersForWeek(people, week)) {
+        if (member.id in net) net[member.id] += f.perMemberCents;
+        roommateTotal += f.perMemberCents;
+      }
+    }
+    weeklyRateCents = nextRateCents;
+  }
+
   // A recorded payment of A -> B settles A's debt: A's net falls, B's rises.
   // It nets to zero across the two, so the house is unaffected.
   for (const pay of recordedPayments) {
@@ -288,7 +388,7 @@ export function computeBalances(
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const houseCents = -roommateTotal || 0;
-  return { nets, settlements: settle(nets), houseCents };
+  return { nets, settlements: settle(nets), houseCents, weeklyRateCents };
 }
 
 // Greedy debtor/creditor matching, same as the old backend settle_balances.

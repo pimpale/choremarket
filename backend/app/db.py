@@ -4,6 +4,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+from .mock_data import MOCK_ROOMMATES
+
 
 ROOT = Path(__file__).resolve().parents[1]
 # Override with CHOREMARKET_DB to point at a persistent volume in production
@@ -146,9 +148,5 @@ def seed_roommates(conn: sqlite3.Connection) -> None:
 
     conn.executemany(
         "INSERT INTO roommates (name) VALUES (?)",
-        [
-            ("Alex",),
-            ("Blair",),
-            ("Casey",),
-        ],
+        [(name,) for name in MOCK_ROOMMATES],
     )
