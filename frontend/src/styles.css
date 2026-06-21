@@ -30,6 +30,10 @@ body {
 
 .app-nav {
   min-height: 64px;
+  /* In the ledger's fixed-height flex column (.app-root-full), never let the
+     navbar be shrunk — otherwise the expanded mobile menu overflows its box and
+     overlaps the ledger table below it. */
+  flex-shrink: 0;
 }
 
 .app-nav-container {
@@ -321,10 +325,6 @@ h2 {
   font-variant-numeric: tabular-nums;
 }
 
-.ledger-table.sheet td:first-child {
-  padding: 0 10px;
-}
-
 /* Borderless inputs so cells read like a spreadsheet until focused. */
 .sheet-input {
   border: 1px solid transparent !important;
@@ -332,6 +332,8 @@ h2 {
   background: transparent !important;
   box-shadow: none !important;
   height: 34px;
+  /* Match the 14px static cells; the form-control default (16px) reads larger. */
+  font-size: 14px;
   padding: 2px 8px !important;
 }
 
@@ -426,7 +428,8 @@ h2 {
 }
 
 .week-cell .week-progress {
-  width: 150px;
+  min-width: 75px;
+  max-width: 200px;
   margin-top: 10px;
 }
 
