@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import date
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import repository
 from .db import init_db
-from .mechanism import current_week, upcoming_week
+from .weeks import current_week, upcoming_week
 
 SPAWNER_INTERVAL_SECONDS = 3600
 
@@ -53,11 +56,26 @@ app.add_middleware(
 
 class RoommatePayload(BaseModel):
     name: str
+    join_date: str | None = None
+
+
+class RoommateDatesPayload(BaseModel):
+    join_date: str | None = None
+    leave_date: str | None = None
+
+
+class PaymentPayload(BaseModel):
+    from_roommate_id: int
+    to_roommate_id: int
+    amount_cents: int
+    note: str = ""
+    paid_on: str | None = None
 
 
 class RecurringChorePayload(BaseModel):
     name: str
     description: str = ""
+    cadence: str = "weekly"
 
 
 class PreferencePayload(BaseModel):
@@ -67,11 +85,33 @@ class PreferencePayload(BaseModel):
     bid_cents: int
 
 
+class InstancePreferencePayload(BaseModel):
+    chore_instance_id: int
+    roommate_id: int
+    wtp_cents: int | None = None
+    bid_cents: int | None = None
+
+
 class OneOffPayload(BaseModel):
     name: str
     description: str = ""
     week_start: str
     assignee_id: int | None = None
+    payout_cents: int = 0
+
+
+class RecurringInstancePayload(BaseModel):
+    recurring_chore_id: int
+
+
+class NewRecurringInstancePayload(BaseModel):
+    name: str
+    description: str = ""
+    cadence: str = "weekly"
+
+
+class ManualOverridePayload(BaseModel):
+    assignee_id: int
     payout_cents: int = 0
 
 
@@ -88,8 +128,19 @@ class WeekPayload(BaseModel):
     week_start: str
 
 
+class SettingsPayload(BaseModel):
+    mechanism: str
+
+
+# Path to the built frontend (produced by `npm run build`). Present in the
+# Docker image / production; absent in local dev where Vite serves the UI.
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+
 @app.get("/")
 def home():
+    if FRONTEND_DIST.is_dir():
+        return FileResponse(FRONTEND_DIST / "index.html")
     return {
         "name": "Choremarket API",
         "frontend": "http://127.0.0.1:5173",
@@ -102,6 +153,7 @@ def api_state():
     return {
         "current_week": current_week().isoformat(),
         "upcoming_week": upcoming_week().isoformat(),
+        "mechanism": repository.get_mechanism(),
         "roommates": [row_to_dict(row) for row in repository.all_roommates()],
         "active_roommates": [
             row_to_dict(row) for row in repository.active_roommates()
@@ -111,6 +163,24 @@ def api_state():
         ],
         "weeks": repository.known_instance_weeks(),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Settings (active transfer mechanism)
+# --------------------------------------------------------------------------- #
+@app.get("/api/settings")
+def api_settings():
+    return {"mechanism": repository.get_mechanism()}
+
+
+@app.put("/api/settings")
+def api_save_settings(payload: SettingsPayload):
+    try:
+        # Switching the mechanism re-derives every recurring instance under it.
+        repository.set_mechanism(payload.mechanism)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return {"mechanism": repository.get_mechanism()}
 
 
 # --------------------------------------------------------------------------- #
@@ -128,13 +198,22 @@ def api_roommates():
 
 @app.post("/api/roommates")
 def api_create_roommate(payload: RoommatePayload):
-    repository.add_roommate(payload.name)
+    repository.add_roommate(payload.name, payload.join_date)
+    return api_roommates()
+
+
+@app.patch("/api/roommates/{roommate_id}")
+def api_update_roommate_dates(roommate_id: int, payload: RoommateDatesPayload):
+    repository.update_roommate_dates(
+        roommate_id, payload.join_date, payload.leave_date
+    )
     return api_roommates()
 
 
 @app.delete("/api/roommates/{roommate_id}")
-def api_remove_roommate(roommate_id: int):
-    repository.remove_roommate(roommate_id)
+def api_remove_roommate(roommate_id: int, leave_date: str | None = None):
+    # "Removing" a roommate just closes their membership window (leave date).
+    repository.remove_roommate(roommate_id, leave_date)
     return api_roommates()
 
 
@@ -158,13 +237,28 @@ def api_recurring_chores():
 
 @app.post("/api/recurring-chores")
 def api_create_recurring_chore(payload: RecurringChorePayload):
-    repository.add_recurring_chore(payload.name, payload.description)
+    try:
+        repository.add_recurring_chore(
+            payload.name,
+            payload.description,
+            payload.cadence,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     return api_recurring_chores()
 
 
 @app.patch("/api/recurring-chores/{chore_id}")
 def api_update_recurring_chore(chore_id: int, payload: RecurringChorePayload):
-    repository.update_recurring_chore(chore_id, payload.name, payload.description)
+    try:
+        repository.update_recurring_chore(
+            chore_id,
+            payload.name,
+            payload.description,
+            payload.cadence,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     return api_recurring_chores()
 
 
@@ -181,19 +275,17 @@ def api_remove_recurring_chore(chore_id: int):
 def api_preferences():
     roommates = repository.active_roommates()
     chores = repository.active_recurring_chores()
-    grid = repository.preferences_grid()
-    preferences = []
-    for roommate in roommates:
-        for chore in chores:
-            pref = grid[roommate["id"]][chore["id"]]
-            preferences.append(
-                {
-                    "roommate_id": pref.roommate_id,
-                    "recurring_chore_id": pref.chore_id,
-                    "wtp_cents": pref.wtp_cents,
-                    "bid_cents": pref.bid_cents,
-                }
-            )
+    grid = repository.preferences_by_chore()
+    preferences = [
+        {
+            "roommate_id": roommate_id,
+            "recurring_chore_id": chore_id,
+            "wtp_cents": pref["wtp_cents"],
+            "bid_cents": pref["bid_cents"],
+        }
+        for chore_id, by_roommate in grid.items()
+        for roommate_id, pref in by_roommate.items()
+    ]
     return {
         "roommates": [row_to_dict(row) for row in roommates],
         "recurring_chores": [row_to_dict(row) for row in chores],
@@ -209,8 +301,7 @@ def api_save_preference(payload: PreferencePayload):
         payload.wtp_cents,
         payload.bid_cents,
     )
-    # Keep upcoming, not-yet-done ledger rows in sync automatically.
-    repository.recompute_future_weeks()
+    # Nothing to recompute server-side: the client derives transfers live.
     return {"ok": True}
 
 
@@ -219,20 +310,18 @@ def api_save_preference(payload: PreferencePayload):
 # --------------------------------------------------------------------------- #
 @app.get("/api/ledger")
 def api_ledger(week_start: str | None = None, assignee_id: int | None = None):
-    instances = repository.all_instances(week_start, assignee_id)
-    this_week = current_week().isoformat()
-    next_week = upcoming_week().isoformat()
-    for instance in instances:
-        instance["week_class"] = week_class(instance, this_week, next_week)
     return {
-        "current_week": this_week,
-        "upcoming_week": next_week,
-        "instances": instances,
-        "roommates": [row_to_dict(row) for row in repository.active_roommates()],
+        "current_week": current_week().isoformat(),
+        "upcoming_week": upcoming_week().isoformat(),
+        "mechanism": repository.get_mechanism(),
+        "instances": repository.all_instances(week_start, assignee_id),
+        "roommates": [row_to_dict(row) for row in repository.all_roommates()],
         "recurring_chores": [
             row_to_dict(row) for row in repository.active_recurring_chores()
         ],
         "preferences_by_chore": repository.preferences_by_chore(),
+        "preferences_by_instance": repository.preferences_by_instance(),
+        "recorded_payments": repository.list_roommate_payments(),
         "weeks": repository.known_instance_weeks(),
     }
 
@@ -246,6 +335,77 @@ def api_add_one_off(payload: OneOffPayload):
         payload.assignee_id,
         payload.payout_cents,
     )
+    return api_ledger()
+
+
+@app.put("/api/ledger/instance-preferences")
+def api_save_instance_preference(payload: InstancePreferencePayload):
+    try:
+        repository.save_instance_preference(
+            payload.chore_instance_id,
+            payload.roommate_id,
+            payload.wtp_cents,
+            payload.bid_cents,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return api_ledger()
+
+
+@app.post("/api/ledger/instances/{instance_id}/recurring")
+def api_convert_instance_to_recurring(
+    instance_id: int,
+    payload: RecurringInstancePayload,
+):
+    try:
+        repository.convert_instance_to_recurring(
+            instance_id,
+            payload.recurring_chore_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return api_ledger()
+
+
+@app.post("/api/ledger/instances/{instance_id}/recurring/new")
+def api_convert_instance_to_new_recurring(
+    instance_id: int,
+    payload: NewRecurringInstancePayload,
+):
+    try:
+        repository.convert_instance_to_new_recurring(
+            instance_id,
+            payload.name,
+            payload.description,
+            payload.cadence,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return api_ledger()
+
+
+@app.post("/api/ledger/instances/{instance_id}/one-off")
+def api_convert_instance_to_one_off(instance_id: int):
+    try:
+        repository.convert_recurring_to_one_off(instance_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return api_ledger()
+
+
+@app.post("/api/ledger/instances/{instance_id}/manual-override")
+def api_set_manual_override(
+    instance_id: int,
+    payload: ManualOverridePayload,
+):
+    try:
+        repository.set_manual_override(
+            instance_id,
+            payload.assignee_id,
+            payload.payout_cents,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     return api_ledger()
 
 
@@ -274,42 +434,54 @@ def api_spawn(payload: WeekPayload | None = None):
     return api_ledger()
 
 
-@app.post("/api/ledger/recompute")
-def api_recompute(payload: WeekPayload):
-    repository.recompute_week(repository.week_from_string(payload.week_start))
+# --------------------------------------------------------------------------- #
+# Recorded settle-up payments
+# --------------------------------------------------------------------------- #
+@app.post("/api/payments")
+def api_add_payment(payload: PaymentPayload):
+    try:
+        repository.add_roommate_payment(
+            payload.from_roommate_id,
+            payload.to_roommate_id,
+            payload.amount_cents,
+            payload.note,
+            payload.paid_on,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     return api_ledger()
 
 
-# --------------------------------------------------------------------------- #
-# Balances
-# --------------------------------------------------------------------------- #
-@app.get("/api/balances")
-def api_balances():
-    data = repository.overall_balances()
-    return {
-        "nets": [row_to_dict(row) for row in data["nets"]],
-        "settlements": data["settlements"],
-    }
+@app.delete("/api/payments/{payment_id}")
+def api_delete_payment(payment_id: int):
+    repository.delete_roommate_payment(payment_id)
+    return api_ledger()
 
 
 @app.post("/api/test/reset-mock-data")
 def api_reset_mock_data():
     repository.reset_mock_data()
-    return {"ok": True, "ledger": api_ledger(), "balances": api_balances()}
+    return {"ok": True, "ledger": api_ledger()}
 
 
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-def week_class(instance: dict, this_week: str, next_week: str) -> str:
-    if instance["status"] == "done":
-        return "done"
-    if instance["week_start"] == this_week:
-        return "current"
-    if instance["week_start"] == next_week:
-        return "upcoming"
-    return "other"
-
-
 def row_to_dict(row) -> dict[str, object]:
     return {key: row[key] for key in row.keys()}
+
+
+# --------------------------------------------------------------------------- #
+# Static frontend (production). Mounted last so every /api route above wins.
+# --------------------------------------------------------------------------- #
+if FRONTEND_DIST.is_dir():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=FRONTEND_DIST / "assets"),
+        name="assets",
+    )
+
+    @app.get("/{full_path:path}")
+    def spa_fallback(full_path: str):
+        # Client-side routes (e.g. /balances) resolve to the SPA shell.
+        return FileResponse(FRONTEND_DIST / "index.html")

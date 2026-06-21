@@ -1,11 +1,26 @@
 import { useState } from 'react';
-import { Alert, Badge, Button, Form, Table } from 'react-bootstrap';
+import { Alert, Badge, Button, ButtonGroup, Form, Table, ToggleButton } from 'react-bootstrap';
 
 import { api, useAsync } from '../lib/api';
 
+const MECHANISMS = [
+  { value: 'agv', label: 'AGV', hint: 'Budget-balanced: every chore’s transfers sum to zero — no house account needed.' },
+  { value: 'vcg', label: 'VCG', hint: 'Vickrey–Clarke–Groves: the doer is paid the second-lowest bid; the house covers the resulting deficit.' },
+];
+
 export default function AdminPage({ bump }: { bump: () => void }) {
   const { data, setData, error } = useAsync(() => api('/api/roommates'), []);
+  const settings = useAsync(() => api('/api/settings'), []);
   const [name, setName] = useState('');
+
+  const mechanism = settings.data?.mechanism ?? 'agv';
+
+  async function selectMechanism(value: string) {
+    if (value === mechanism) return;
+    const next = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ mechanism: value }) });
+    settings.setData(next);
+    bump();
+  }
 
   async function addRoommate(event: React.FormEvent) {
     event.preventDefault();
@@ -18,6 +33,18 @@ export default function AdminPage({ bump }: { bump: () => void }) {
 
   async function removeRoommate(roommateId: number) {
     const next = await api(`/api/roommates/${roommateId}`, { method: 'DELETE' });
+    setData(next);
+    bump();
+  }
+
+  async function updateDates(roommate: any, field: 'join' | 'leave', value: string) {
+    const next = await api(`/api/roommates/${roommate.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        join_date: field === 'join' ? value || null : roommate.join_date || null,
+        leave_date: field === 'leave' ? value || null : roommate.leave_date || null,
+      }),
+    });
     setData(next);
     bump();
   }
@@ -38,6 +65,30 @@ export default function AdminPage({ bump }: { bump: () => void }) {
   return (
     <section className="panel">
       {error && <Alert variant="danger">{error}</Alert>}
+
+      <div className="mechanism-setting">
+        <div className="mechanism-heading">
+          <span className="mechanism-title">Transfer mechanism</span>
+          <ButtonGroup>
+            {MECHANISMS.map((option) => (
+              <ToggleButton
+                key={option.value}
+                id={`mechanism-${option.value}`}
+                type="radio"
+                variant="outline-primary"
+                name="mechanism"
+                value={option.value}
+                checked={mechanism === option.value}
+                onChange={() => selectMechanism(option.value)}
+              >
+                {option.label}
+              </ToggleButton>
+            ))}
+          </ButtonGroup>
+        </div>
+        <p className="mechanism-hint">{MECHANISMS.find((m) => m.value === mechanism)?.hint}</p>
+      </div>
+
       <Form onSubmit={addRoommate} className="toolbar">
         <Form.Group controlId="new-roommate">
           <Form.Label>Name</Form.Label>
@@ -56,6 +107,8 @@ export default function AdminPage({ bump }: { bump: () => void }) {
         <thead>
           <tr>
             <th>Name</th>
+            <th>Joined</th>
+            <th>Left</th>
             <th>Status</th>
             <th className="text-end">Action</th>
           </tr>
@@ -65,8 +118,24 @@ export default function AdminPage({ bump }: { bump: () => void }) {
             <tr key={roommate.id}>
               <td>{roommate.name}</td>
               <td>
+                <Form.Control
+                  type="date"
+                  size="sm"
+                  value={roommate.join_date ?? ''}
+                  onChange={(event) => updateDates(roommate, 'join', event.target.value)}
+                />
+              </td>
+              <td>
+                <Form.Control
+                  type="date"
+                  size="sm"
+                  value={roommate.leave_date ?? ''}
+                  onChange={(event) => updateDates(roommate, 'leave', event.target.value)}
+                />
+              </td>
+              <td>
                 <Badge bg={roommate.active ? 'success' : 'secondary'}>
-                  {roommate.active ? 'Active' : 'Removed'}
+                  {roommate.active ? 'Active' : 'Left'}
                 </Badge>
               </td>
               <td className="text-end">

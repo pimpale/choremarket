@@ -3,10 +3,16 @@ import { Alert, Button, Form, Table } from 'react-bootstrap';
 
 import { api, useAsync } from '../lib/api';
 
+const CADENCES = [
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'ad-hoc', label: 'Ad-hoc' },
+];
+
 export default function RecurringChoresPage({ bump }: { bump: () => void }) {
   const { data, setData, error } = useAsync(() => api('/api/recurring-chores'), []);
   const [drafts, setDrafts] = useState<Record<number, any>>({});
-  const [newChore, setNewChore] = useState({ name: '', description: '' });
+  const [newChore, setNewChore] = useState({ name: '', description: '', cadence: 'weekly' });
   const chores = data?.recurring_chores || [];
 
   useEffect(() => {
@@ -21,7 +27,7 @@ export default function RecurringChoresPage({ bump }: { bump: () => void }) {
       method: 'POST',
       body: JSON.stringify(newChore),
     });
-    setNewChore({ name: '', description: '' });
+    setNewChore({ name: '', description: '', cadence: 'weekly' });
     setData(next);
     bump();
   }
@@ -54,7 +60,7 @@ export default function RecurringChoresPage({ bump }: { bump: () => void }) {
   return (
     <section className="panel">
       <p className="status-text mb-3">
-        Recurring chores spawn one ledger row per roommate-week automatically.
+        Weekly chores spawn every week, monthly chores spawn in the week containing the 1st, and ad-hoc chores stay templates.
       </p>
       <Form onSubmit={addChore} className="toolbar">
         <Form.Group controlId="new-chore-name">
@@ -65,6 +71,16 @@ export default function RecurringChoresPage({ bump }: { bump: () => void }) {
           <Form.Label>Description</Form.Label>
           <Form.Control value={newChore.description} onChange={(event) => setNewChore({ ...newChore, description: event.target.value })} />
         </Form.Group>
+        <Form.Group controlId="new-chore-cadence">
+          <Form.Label>Cadence</Form.Label>
+          <Form.Select value={newChore.cadence} onChange={(event) => setNewChore({ ...newChore, cadence: event.target.value })}>
+            {CADENCES.map((cadence) => (
+              <option key={cadence.value} value={cadence.value}>
+                {cadence.label}
+              </option>
+            ))}
+          </Form.Select>
+        </Form.Group>
         <Button type="submit">Add Recurring Chore</Button>
       </Form>
 
@@ -73,6 +89,7 @@ export default function RecurringChoresPage({ bump }: { bump: () => void }) {
           <tr>
             <th>Chore</th>
             <th>Description</th>
+            <th>Cadence</th>
             <th className="text-end">Action</th>
           </tr>
         </thead>
@@ -94,6 +111,22 @@ export default function RecurringChoresPage({ bump }: { bump: () => void }) {
                     onChange={(event) => updateDraft(chore.id, 'description', event.target.value)}
                     onBlur={() => saveChore(chore.id)}
                   />
+                </td>
+                <td>
+                  <Form.Select
+                    value={draft.cadence ?? 'weekly'}
+                    onChange={(event) => {
+                      const nextDraft = { ...draft, cadence: event.target.value };
+                      updateDraft(chore.id, 'cadence', event.target.value);
+                      saveChore(chore.id, nextDraft);
+                    }}
+                  >
+                    {CADENCES.map((cadence) => (
+                      <option key={cadence.value} value={cadence.value}>
+                        {cadence.label}
+                      </option>
+                    ))}
+                  </Form.Select>
                 </td>
                 <td className="text-end">
                   <Button size="sm" variant="outline-secondary" onClick={() => removeChore(chore.id)}>

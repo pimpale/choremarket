@@ -38,7 +38,32 @@ npm run dev
 
 Then open the local URL printed by Vite.
 
-The SQLite database is created automatically at `backend/choremarket.sqlite3`.
+The SQLite database is created automatically at `backend/choremarket.sqlite3`
+(override the location with the `CHOREMARKET_DB` environment variable).
 
 For local testing, the Admin page has a mock-data reset that recreates roommates,
 chores, generated bids/WTPs, and historical ledger rows.
+
+## Deploy (Docker / Railway)
+
+The `Dockerfile` builds the frontend and serves it from the FastAPI backend on a
+single port, so the whole app runs as one service.
+
+Build and run locally:
+
+```bash
+docker build -t choremarket .
+docker run -p 8000:8000 choremarket
+# open http://localhost:8000
+```
+
+On Railway, point a new service at this repo — it auto-detects the `Dockerfile`
+(`railway.json` pins the builder) and injects `$PORT`. The SQLite file lives
+inside the container and is wiped on every redeploy, so for persistent data
+attach a Railway **volume** and set `CHOREMARKET_DB` to a path on it, e.g.:
+
+```
+CHOREMARKET_DB=/data/choremarket.sqlite3
+```
+
+(with the volume mounted at `/data`).
