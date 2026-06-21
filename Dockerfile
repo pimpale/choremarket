@@ -14,9 +14,16 @@ RUN npm run build
 FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /uvx /bin/
 
+# tzdata so the container's local date matches the household's timezone, not
+# UTC. `current_week()` uses date.today(); override TZ via a Railway variable.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    TZ=America/New_York
 
 # Install dependencies from the lockfile first so they stay cached across
 # source changes.

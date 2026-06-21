@@ -57,6 +57,10 @@ docker run -p 8000:8000 choremarket
 # open http://localhost:8000
 ```
 
+The image defaults to `TZ=America/New_York` so the server's notion of "this
+week" (`current_week()` uses the local date) matches the household. Override it
+with a `TZ` variable (e.g. `America/Los_Angeles`) for a different timezone.
+
 On Railway, point a new service at this repo — it auto-detects the `Dockerfile`
 (`railway.json` pins the builder) and injects `$PORT`. The SQLite file lives
 inside the container and is wiped on every redeploy, so for persistent data
