@@ -13,6 +13,10 @@ dependencies = [
 dev = [
     "pytest>=8.3.0",
 ]
+laboratory = [
+    "highspy>=1.11.0",
+    "pyomo>=6.9.0",
+]
 
 [tool.uv]
 package = false
