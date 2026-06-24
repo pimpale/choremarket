@@ -75,7 +75,10 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   const prefsByInstance = data?.preferences_by_instance || {};
   const mechanism = data?.mechanism || 'agv';
   const financing = data?.financing || 'none';
-  const vcgLike = mechanism === 'vcg';
+  // Bailey-Cavallo shares VCG's column layout (house account + Clarke taxes) and
+  // then adds its own Redistribution section for the Cavallo term.
+  const isBC = mechanism === 'bailey-cavallo';
+  const vcgLike = mechanism === 'vcg' || isBC;
   // The Financing column only exists when EMA financing is on.
   const finActive = financing === 'ema';
   const people: Person[] = allRoommates.map((r: any) => ({
@@ -417,6 +420,14 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
             key: `clarke-${roommate.id}`,
             label: roommate.name,
           })),
+          // Bailey-Cavallo adds a per-roommate redistribution column after the
+          // Clarke taxes, kept separate so the rebate/charge isn't hidden in the tax.
+          ...(isBC
+            ? roommates.map((roommate: any) => ({
+                key: `rebate-${roommate.id}`,
+                label: roommate.name,
+              }))
+            : []),
         ]
       : [
           { key: 'total-wtp', label: 'Total WTP' },
@@ -434,6 +445,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
           { label: 'Inputs', colSpan: 3 },
           { label: 'VCG price', colSpan: 3 },
           ...(roommates.length ? [{ label: 'Clarke tax', colSpan: roommates.length }] : []),
+          ...(isBC && roommates.length ? [{ label: 'Redistribution of deficit share', colSpan: roommates.length }] : []),
         ]
       : [
           { label: 'Inputs', colSpan: 3 },
@@ -574,7 +586,15 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     const house = -Object.values(ledger.payments).reduce((sum: number, amount) => sum + amount, 0);
 
     if (vcgLike) {
-      const doerNet = -paymentOf(doer.id);
+      // Bailey-Cavallo's per-roommate net is base_i (the raw VCG payment) minus the
+      // redistribution h_i. Recover the raw VCG numbers from the VCG ledger so the
+      // Clarke tax and doer-paid columns show the underlying price, and the
+      // redistribution gets its own column rather than being folded in.
+      const vcgLedger = isBC
+        ? ledgerForInstance(rawOf(instance), people, prefsByChore, 'vcg', prefsByInstance)
+        : ledger;
+      const baseOf = (id: number) => vcgLedger.payments[id] ?? 0;
+      const doerNet = -baseOf(doer.id);
       return [
         mechValueCell('total-wtp', cents(totalWtp), { tip: wtpTip, start: true }),
         mechValueCell('lowest-bid', cents(doer.bid), { partyLabel: `from ${doer.name}`, tip: lowestBidTip }),
@@ -592,14 +612,18 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         mechValueCell('doer-paid', cents(doerNet), {
           partyLabel: `to ${doer.name}`,
           valueClass: 'receive',
-          tip: 'What the assignee receives — the second-lowest bid (capped at the value they uniquely unlock when the job is only barely worth doing).',
+          tip: isBC
+            ? 'The raw VCG price the assignee earns — the second-lowest bid. Bailey–Cavallo then adjusts it by the redistribution column to the right.'
+            : 'What the assignee receives — the second-lowest bid (capped at the value they uniquely unlock when the job is only barely worth doing).',
         }),
         mechValueCell('house', cents(house), {
           valueClass: paymentClass(house),
-          tip: 'VCG is not budget-balanced: the house covers the doer’s pay minus any Clarke taxes. Positive = deficit.',
+          tip: isBC
+            ? 'What the house is left holding after the VCG price and the Cavallo redistribution: positive = residual deficit, negative = it over-collected into a surplus. Bailey–Cavallo only approaches budget balance.'
+            : 'VCG is not budget-balanced: the house covers the doer’s pay minus any Clarke taxes. Positive = deficit.',
         }),
         ...roommates.map((roommate: any) => {
-          const amount = paymentOf(roommate.id);
+          const amount = baseOf(roommate.id);
           if (roommate.id === ledger.assigneeId) return blankMechCell(`clarke-${roommate.id}`);
           return mechValueCell(`clarke-${roommate.id}`, cents(amount), {
             partyLabel: `from ${roommate.name}`,
@@ -608,6 +632,26 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
               'Clarke (pivotal) tax: a non-doer pays only when their WTP is what tips the chore from “not worth doing” to “worth doing.” It is $0 whenever there is surplus WTP to spare, and helps fund the doer’s pay when it does bite.',
           });
         }),
+        // Bailey-Cavallo redistribution h_i = base_i - net_i: positive = a rebate the
+        // roommate receives, negative = a share of the house deficit they're charged.
+        ...(isBC
+          ? roommates.map((roommate: any) => {
+              const h = baseOf(roommate.id) - paymentOf(roommate.id);
+              if (h === 0) {
+                return mechValueCell(`rebate-${roommate.id}`, cents(0), {
+                  partyLabel: roommate.name,
+                  tip: 'Bailey–Cavallo redistribution: 1/n of the VCG revenue the other roommates would generate without this one. Zero here.',
+                });
+              }
+              const receives = h > 0;
+              return mechValueCell(`rebate-${roommate.id}`, cents(Math.abs(h)), {
+                partyLabel: `${receives ? 'to' : 'from'} ${roommate.name}`,
+                valueClass: receives ? 'receive' : 'pay',
+                tip:
+                  'Bailey–Cavallo redistribution = 1/n of the VCG revenue the OTHER roommates would generate without this one. A surplus is rebated (to, green); a deficit is shared back as a charge (from, red). It depends only on the others’ bids, so it keeps the mechanism strategyproof.',
+              });
+            })
+          : []),
       ];
     }
 

@@ -11,7 +11,7 @@ from .weeks import current_week, due_date_for, upcoming_week
 
 
 VALID_STATUSES = {"pending", "done", "failed"}
-MECHANISMS = {"agv", "vcg"}
+MECHANISMS = {"agv", "vcg", "bailey-cavallo"}
 FINANCINGS = {"none", "ema"}
 CADENCES = {"weekly", "monthly", "ad-hoc"}
 

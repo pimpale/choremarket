@@ -5,7 +5,7 @@
 // here from those primitives. There are at most a few hundred chore instances in
 // a year, so doing this live on every render is trivial.
 
-export type Mechanism = 'agv' | 'vcg';
+export type Mechanism = 'agv' | 'vcg' | 'bailey-cavallo';
 
 // Financing is orthogonal to the mechanism. 'none' lets the house absorb any VCG
 // deficit (the textbook behaviour); 'ema' amortizes that deficit with a flat
@@ -121,6 +121,56 @@ function vcgPayments(
   return payments;
 }
 
+// Total VCG payment collected by the house for a set of people under the natural
+// (lowest-bidder) allocation: positive = net collected from roommates, negative =
+// net paid out. 0 when there's nobody to do the chore or it isn't worth doing.
+// This is the "VCG revenue" the Cavallo rebate redistributes.
+function vcgRevenue(people: Person[], prefs: Record<number, Pref>): number {
+  if (people.length < 2) return 0;
+  const assignee = pickAssignee(people, prefs, null);
+  const winningBid = prefs[assignee.id]?.bid_cents ?? 0;
+  const totalWtp = people.reduce((s, p) => s + (prefs[p.id]?.wtp_cents ?? 0), 0);
+  if (totalWtp - winningBid < 0) return 0; // not worth doing -> no transfers
+  const payments = vcgPayments(people, prefs, assignee.id, winningBid);
+  return Object.values(payments).reduce((s, a) => s + a, 0);
+}
+
+// Bailey-Cavallo, symmetric (deficit-sharing) variant. Each roommate's VCG payment
+// is adjusted by h_i = R_{-i}/n, where R_{-i} is the VCG revenue the *other*
+// roommates would generate without them. When R_{-i} > 0 that's the textbook
+// Cavallo rebate (hand a surplus back); when R_{-i} < 0 it's the mirror image -- a
+// charge that shares the deficit the rest of the house would run. Either way h_i
+// depends only on the *other* roommates' reports, so -- exactly like the rebate --
+// it stays a Groves mechanism and remains strategyproof. The sign is irrelevant to
+// incentives. In this single-chore setting VCG runs a deficit, so this is mostly
+// the charge side: it pulls the house deficit back toward zero by levying roommates.
+//
+// Two textbook Cavallo guarantees do NOT survive the deficit direction, by design:
+//   - It is no longer individually rational: a roommate can be charged more than the
+//     chore is worth to them (the rebate side only ever pays roommates).
+//   - It does not reach exact budget balance. Cavallo's feasibility theorem
+//     (rebates <= surplus) is one-directional, so the charges need not sum to the
+//     deficit -- the house is left with a smaller residual deficit OR a small surplus.
+// Crucially we must NOT cap/renormalise to force exact balance: the cap would depend
+// on the full-economy revenue (which includes a roommate's own report), so a binding
+// cap reintroduces own-report dependence and breaks strategyproofness. We take the
+// signed h_i straight and let the house carry whatever residual is left.
+function baileyCavalloPayments(
+  people: Person[],
+  prefs: Record<number, Pref>,
+  assigneeId: number,
+  winningBid: number,
+): Record<number, number> {
+  const base = vcgPayments(people, prefs, assigneeId, winningBid);
+  const n = people.length;
+  const out: Record<number, number> = {};
+  for (const p of people) {
+    const others = people.filter((q) => q.id !== p.id);
+    out[p.id] = Math.round(base[p.id] - vcgRevenue(others, prefs) / n);
+  }
+  return out;
+}
+
 // Balanced transfer for a directly-entered one-off: the assignee receives the
 // payout, everyone else splits the cost so payments sum to exactly zero.
 export function flatPayout(assigneeId: number | null, roommateIds: number[], payoutCents: number): Record<number, number> {
@@ -168,7 +218,9 @@ export function computeLedger(
   const payments =
     mechanism === 'vcg'
       ? vcgPayments(people, prefs, assignee.id, winningBid)
-      : agvPayments(people, prefs, assignee.id);
+      : mechanism === 'bailey-cavallo'
+        ? baileyCavalloPayments(people, prefs, assignee.id, winningBid)
+        : agvPayments(people, prefs, assignee.id);
   return { assigneeId: assignee.id, surplusCents: surplus, worthDoing: true, payments };
 }
 

@@ -6,6 +6,7 @@ import { api, useAsync } from '../lib/api';
 const MECHANISMS = [
   { value: 'agv', label: 'AGV', hint: 'Budget-balanced: every chore’s transfers sum to zero — no house account needed.' },
   { value: 'vcg', label: 'VCG', hint: 'Vickrey–Clarke–Groves: the doer is paid the second-lowest bid; the house covers the resulting deficit.' },
+  { value: 'bailey-cavallo', label: 'Bailey–Cavallo', hint: 'Symmetric Cavallo: each roommate’s transfer is adjusted by 1/n of the VCG revenue the others would generate without them — a rebate when that’s a surplus, a charge when it’s a deficit. Strategyproof like VCG, and it shares the house deficit back among roommates (so it isn’t individually rational, and only approaches budget balance — the house keeps a smaller residual).' },
 ];
 
 const FINANCINGS = [

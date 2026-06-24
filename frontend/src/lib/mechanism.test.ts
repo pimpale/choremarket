@@ -61,6 +61,32 @@ describe('VCG (Clarke)', () => {
   });
 });
 
+describe('Bailey-Cavallo (symmetric Cavallo: rebate surplus / share deficit)', () => {
+  it('adjusts each VCG payment by h_i = R_{-i}/n and shares the deficit back', () => {
+    // base VCG = {1:0, 2:-900, 3:0}; R_{-1}=R_{-2}=-1100, R_{-3}=-900 (n=3).
+    const prefs = { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) };
+    const led = computeLedger(people, prefs, 'bailey-cavallo');
+    expect(led.assigneeId).toBe(2);
+    expect(led.payments).toEqual({ 1: 367, 2: -533, 3: 300 });
+  });
+
+  it('differs from VCG -- the charge actually moves money', () => {
+    // base VCG = {1:-900, 2:100, 3:0}; R_{-1}=-100, R_{-2}=0, R_{-3}=-300.
+    const prefs = { 1: P(100, 500), 2: P(700, 900), 3: P(300, 1000) };
+    const bc = computeLedger(people, prefs, 'bailey-cavallo').payments;
+    const vcg = computeLedger(people, prefs, 'vcg').payments;
+    expect(bc).not.toEqual(vcg);
+    expect(bc).toEqual({ 1: -867, 2: 100, 3: 100 });
+  });
+
+  it('conserves in balances (nets + house = 0)', () => {
+    const prefsByChore = { 5: { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) } };
+    const done: RawInstance = { id: 1, recurring_chore_id: 5, assignee_id: null, status: 'done', payout_cents: 0 };
+    const b = computeBalances([done], people, prefsByChore, 'bailey-cavallo');
+    expect(b.nets.reduce((s, n) => s + n.net_cents, 0) + b.houseCents).toBe(0);
+  });
+});
+
 describe('not worth doing', () => {
   it.each(['agv', 'vcg'] as const)('skips when total WTP is below the lowest bid (%s)', (mechanism) => {
     const led = computeLedger(people, { 1: P(100, 900), 2: P(200, 700), 3: P(150, 1100) }, mechanism);
