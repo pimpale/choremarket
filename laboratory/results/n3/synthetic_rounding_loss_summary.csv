@@ -1,0 +1,3 @@
+mechanism,profiles,average_welfare,average_first_best,welfare_ratio,worst_case_regret,average_regret,average_abs_budget_imbalance
+coarse_grid_oracle,500,34.3276,39.03812,0.8793353778306946,51.07,4.71052,0.0
+fine_wtp_grid_oracle,500,34.42316,39.03812,0.8817832416110203,51.07,4.61496,0.0

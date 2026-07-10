@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from .audit import audit_mechanism
+from .demand_lp import audit_demand_solution
 from .domain import ChoreDomain
 from .evaluation import plot_comparison, profile_results, summarize, write_rows, write_summaries
 from .integrated import EqualSplitFirstBest
@@ -13,7 +14,7 @@ from .integrated_lp import solve_integrated_lp
 from .sequential import (
     EqualSplitVickreyFaltingsFair,
     EqualShareMajoritySequential,
-    OptimizedDemandSequential,
+    UnrestrictedDemandSequential,
 )
 from .solver import default_threads
 from .synthetic import generate_profiles, quantize_profile, write_profiles_csv
@@ -22,8 +23,15 @@ from .synthetic import generate_profiles, quantize_profile, write_profiles_csv
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--participants", "-n", type=int, default=3)
-    parser.add_argument("--values", type=float, nargs="+", default=(0, 15, 30))
-    parser.add_argument("--costs", type=float, nargs="+", default=(0, 15, 30))
+    parser.add_argument("--values", type=float, nargs="+", default=(0, 15, 30, 45))
+    parser.add_argument("--costs", type=float, nargs="+", default=(0, 15, 30, 45))
+    parser.add_argument(
+        "--demand-fine-values",
+        type=float,
+        nargs="+",
+        default=(0, 7.5, 15, 22.5, 30, 37.5, 45),
+        help="finer WTP grid for the second demand-LP variant",
+    )
     parser.add_argument("--synthetic-count", type=int, default=500)
     parser.add_argument("--seed", type=int, default=20260710)
     parser.add_argument("--solver", default="appsi_highs")
@@ -57,11 +65,26 @@ def main() -> None:
         enforce_anonymity=not args.no_anonymity,
     )
 
+    fine_values = tuple(sorted(set(args.values) | set(args.demand_fine_values)))
+    fine_demand_domain = ChoreDomain.rectangular(
+        args.participants, fine_values, args.costs
+    )
+    demand_lp_coarse = UnrestrictedDemandSequential(
+        domain,
+        args.solver,
+        name="lp_demand_vickrey_coarse",
+    )
+    demand_lp_fine = UnrestrictedDemandSequential(
+        fine_demand_domain,
+        args.solver,
+        name="lp_demand_vickrey_fine",
+    )
     mechanisms = [
         EqualSplitFirstBest(),
         EqualShareMajoritySequential(),
         EqualSplitVickreyFaltingsFair(),
-        OptimizedDemandSequential(domain, args.solver),
+        demand_lp_coarse,
+        demand_lp_fine,
         lp_solution.mechanism,
     ]
 
@@ -92,6 +115,27 @@ def main() -> None:
     }]
     write_rows(lp_rows, output / "lp_solutions.csv")
 
+    demand_lp_rows = []
+    for resolution, demand_lp in (
+        ("coarse", demand_lp_coarse),
+        ("fine", demand_lp_fine),
+    ):
+        for price, solution in demand_lp.solutions.items():
+            demand_audit = audit_demand_solution(solution)
+            demand_lp_rows.append(
+                {
+                    "resolution": resolution,
+                    "value_levels": repr(solution.value_levels),
+                    "vickrey_price": price,
+                    "worst_case_regret": solution.worst_case_regret,
+                    "average_welfare": solution.average_welfare,
+                    "transfer_bound": solution.transfer_bound,
+                    "max_conditional_transfer": solution.max_conditional_transfer,
+                    **demand_audit,
+                }
+            )
+    write_rows(demand_lp_rows, output / "demand_lp_solutions.csv")
+
     if args.cap_sensitivity:
         sensitivity_rows = []
         for bound in args.cap_sensitivity:
@@ -114,14 +158,46 @@ def main() -> None:
         write_rows(sensitivity_rows, output / "transfer_cap_sensitivity.csv")
 
     synthetic = generate_profiles(domain.n, args.synthetic_count, args.seed)
-    write_profiles_csv(synthetic, output / "synthetic_bid_wtp.csv", args.values, args.costs)
-    synthetic_profiles = [
+    write_profiles_csv(
+        synthetic,
+        output / "synthetic_bid_wtp.csv",
+        args.values,
+        args.costs,
+        fine_values,
+    )
+    raw_profiles = [sample.types for sample in synthetic]
+    coarse_profiles = [
         quantize_profile(sample.types, args.values, args.costs) for sample in synthetic
     ]
-    synthetic_rows = profile_results(mechanisms, synthetic_profiles)
+    fine_profiles = [
+        quantize_profile(sample.types, fine_values, args.costs) for sample in synthetic
+    ]
+    synthetic_rows = []
+    for mechanism in mechanisms:
+        reports = fine_profiles if mechanism is demand_lp_fine else coarse_profiles
+        synthetic_rows.extend(
+            profile_results([mechanism], reports, true_profiles=raw_profiles)
+        )
+
+    rounding_rows = []
+    for label, reports in (
+        ("coarse_grid_oracle", coarse_profiles),
+        ("fine_wtp_grid_oracle", fine_profiles),
+    ):
+        rounding_rows.extend(
+            profile_results(
+                [EqualSplitFirstBest(name=label)],
+                reports,
+                true_profiles=raw_profiles,
+            )
+        )
     write_rows(synthetic_rows, output / "synthetic_welfare.csv")
     write_summaries(summarize(synthetic_rows), output / "synthetic_welfare_summary.csv")
-    plot_comparison(exhaustive_rows, synthetic_rows, output)
+    write_rows(rounding_rows, output / "synthetic_rounding_loss.csv")
+    write_summaries(
+        summarize(rounding_rows), output / "synthetic_rounding_loss_summary.csv"
+    )
+    plot_comparison(exhaustive_rows, synthetic_rows, output, rounding_rows)
 
     print("\nExhaustive-grid summary")
     for summary in exhaustive_summaries:

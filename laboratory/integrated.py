@@ -16,6 +16,10 @@ class EqualSplitFirstBest:
 
     name = "equal_split_first_best"
 
+    def __init__(self, name: str | None = None) -> None:
+        if name is not None:
+            self.name = name
+
     def run(self, reports: Profile) -> Lottery:
         n = len(reports)
         performer = efficient_outcome(reports)

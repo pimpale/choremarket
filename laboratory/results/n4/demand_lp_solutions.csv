@@ -1,0 +1,4 @@
+vickrey_price,worst_case_regret,average_welfare,transfer_bound,max_conditional_transfer,max_wtp_deviation_gain,max_conditional_balance_error
+0.0,0.0,60.0,480.0,0.0,0.0,0.0
+15.0,1.5e-06,55.82146113538019,480.0,3.750001236160719,1.0302869668521453e-13,1.7763568394002505e-15
+30.0,7.500003,49.99999704938271,480.0,10.0,8.881784197001252e-16,0.0

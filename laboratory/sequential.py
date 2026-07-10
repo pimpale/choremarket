@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from itertools import combinations, product
 from math import ceil
-from typing import Iterable
 
 from .domain import ChoreDomain, Outcome, Profile
+from .demand_lp import DemandLPSolution, solve_unrestricted_demand_lp
 from .mechanism import Lottery, deterministic_lottery
-from .solver import pyomo, solve
 
 
 def procurement(reports: Profile) -> tuple[int, float, float]:
@@ -106,120 +103,28 @@ class EqualSplitVickreyFaltingsFair:
         )
 
 
-@dataclass(frozen=True)
-class DemandBranch:
-    name: str
-    charges: tuple[float, ...]
-    voters: tuple[int, ...]
-    quota: int
-
-    def funds(self, values: tuple[float, ...]) -> bool:
-        return sum(values[i] + 1e-12 >= self.charges[i] for i in self.voters) >= self.quota
-
-
-def demand_branch_library(n: int, price: float) -> tuple[DemandBranch, ...]:
-    """Interpretable DSIC and exactly balanced fixed-price demand branches."""
-
-    equal = tuple(price / n for _ in range(n))
-    branches = [
-        DemandBranch("equal_unanimity", equal, tuple(range(n)), n),
-        DemandBranch("equal_majority", equal, tuple(range(n)), ceil((n + 1) / 2)),
-        DemandBranch("equal_two_thirds", equal, tuple(range(n)), ceil(2 * n / 3)),
-    ]
-    for k in range(1, n + 1):
-        for sponsors in combinations(range(n), k):
-            sponsor_set = set(sponsors)
-            charges = tuple(price / k if i in sponsor_set else 0.0 for i in range(n))
-            branches.append(DemandBranch(f"sponsors[{','.join(map(str, sponsors))}]", charges, sponsors, k))
-    # Several definitions coincide for small n or price zero.
-    unique = { (b.charges, b.voters, b.quota): b for b in branches }
-    return tuple(unique.values())
-
-
-def optimize_demand_mixture(
-    n: int,
-    value_levels: Iterable[float],
-    price: float,
-    winning_cost_levels: Iterable[float] | None = None,
-    solver_name: str = "appsi_highs",
-) -> tuple[tuple[DemandBranch, float], ...]:
-    """Minimax-regret mixture over truthful posted-price demand branches.
-
-    The demand rule observes only ``price``. Its objective is robust over every
-    possible winning effort cost no larger than that second price.
-    """
-
-    pyo = pyomo()
-    values = tuple(tuple(map(float, p)) for p in product(value_levels, repeat=n))
-    possible_costs = tuple(
-        cost
-        for cost in (
-            tuple(map(float, winning_cost_levels))
-            if winning_cost_levels is not None
-            else (price,)
-        )
-        if cost <= price + 1e-12
-    )
-    scenarios = tuple((value_profile, cost) for value_profile in values for cost in possible_costs)
-    branches = demand_branch_library(n, price)
-    model = pyo.ConcreteModel()
-    model.B = pyo.RangeSet(0, len(branches) - 1)
-    model.P = pyo.RangeSet(0, len(scenarios) - 1)
-    model.weight = pyo.Var(model.B, domain=pyo.NonNegativeReals)
-    model.regret = pyo.Var(domain=pyo.NonNegativeReals)
-    model.simplex = pyo.Constraint(expr=sum(model.weight[b] for b in model.B) == 1)
-
-    def regret_rule(m, p):
-        value_profile, winning_cost = scenarios[p]
-        surplus = sum(value_profile) - winning_cost
-        optimal = max(0.0, surplus)
-        achieved = sum(
-            m.weight[b] * (surplus if branches[b].funds(value_profile) else 0.0)
-            for b in m.B
-        )
-        return m.regret >= optimal - achieved
-
-    model.regret_bounds = pyo.Constraint(model.P, rule=regret_rule)
-    average = sum(
-        model.weight[b]
-        * sum(
-            (sum(vs) - cost if branches[b].funds(vs) else 0.0)
-            for vs, cost in scenarios
-        )
-        / len(scenarios)
-        for b in model.B
-    )
-    model.primary_objective = pyo.Objective(expr=model.regret, sense=pyo.minimize)
-    solve(model, solver_name)
-    best_regret = float(pyo.value(model.regret))
-    model.primary_objective.deactivate()
-    # HiGHS' feasibility tolerance is absolute; leave a scale-aware margin when
-    # reusing the primary optimum as a lexicographic constraint.
-    tie_tolerance = 1e-6 * max(1.0, abs(best_regret), price)
-    model.regret_tie = pyo.Constraint(expr=model.regret <= best_regret + tie_tolerance)
-    model.secondary_objective = pyo.Objective(expr=average, sense=pyo.maximize)
-    solve(model, solver_name)
-    return tuple(
-        (branches[b], float(pyo.value(model.weight[b])))
-        for b in model.B
-        if float(pyo.value(model.weight[b])) > 1e-9
-    )
-
-
-class OptimizedDemandSequential:
-    """Reverse Vickrey plus a price-indexed minimax posted-price lottery."""
+class UnrestrictedDemandSequential:
+    """Reverse Vickrey plus a full price-indexed randomized demand LP."""
 
     name = "lp_demand_vickrey"
 
-    def __init__(self, domain: ChoreDomain, solver_name: str = "appsi_highs") -> None:
+    def __init__(
+        self,
+        domain: ChoreDomain,
+        solver_name: str = "appsi_highs",
+        *,
+        name: str | None = None,
+    ) -> None:
+        if name is not None:
+            self.name = name
         values = sorted({t.value for t in domain.types})
         prices = sorted({t.cost for t in domain.types})
-        self.mixtures = {
-            price: optimize_demand_mixture(
+        self.solutions: dict[float, DemandLPSolution] = {
+            price: solve_unrestricted_demand_lp(
                 domain.n,
                 values,
-                price,
-                winning_cost_levels=prices,
+                prices,
+                price=price,
                 solver_name=solver_name,
             )
             for price in prices
@@ -229,17 +134,18 @@ class OptimizedDemandSequential:
         n = len(reports)
         performer, _, price = procurement(reports)
         values = tuple(t.value for t in reports)
-        probabilities: dict[Outcome, float] = {None: 0.0, performer: 0.0}
-        masses: dict[Outcome, list[float]] = {None: [0.0] * n, performer: [0.0] * n}
-        for branch, weight in self.mixtures[price]:
-            outcome: Outcome = performer if branch.funds(values) else None
-            probabilities[outcome] += weight
-            if outcome is not None:
-                transfers = [-charge for charge in branch.charges]
-                transfers[performer] += price
-                for i in range(n):
-                    masses[outcome][i] += weight * transfers[i]
+        demand = self.solutions[price].run(values)
+        probabilities: dict[Outcome, float] = {}
+        masses: dict[Outcome, tuple[float, ...]] = {}
+        for funded, probability in demand.probabilities.items():
+            outcome: Outcome = performer if funded else None
+            transfers = list(demand.transfer_mass[funded])
+            if funded:
+                # Demand transfers collect price; procurement pays it to winner.
+                transfers[performer] += price * probability
+            probabilities[outcome] = probability
+            masses[outcome] = tuple(transfers)
         return Lottery(
-            probabilities={o: p for o, p in probabilities.items() if p > 1e-12},
-            transfer_mass={o: tuple(masses[o]) for o, p in probabilities.items() if p > 1e-12},
+            probabilities=probabilities,
+            transfer_mass=masses,
         )

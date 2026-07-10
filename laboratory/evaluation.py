@@ -12,6 +12,23 @@ from .domain import Profile, efficient_outcome, welfare
 from .mechanism import Mechanism
 
 
+DISPLAY_NAMES = {
+    "equal_split_first_best": "EqualSplit + FirstBest",
+    "equal_split_vickrey_majority": "EqualSplit + Vickrey + Majority",
+    "equal_split_vickrey_faltings_fair": "EqualSplit + Vickrey + FaltingsFair",
+    "lp_demand_vickrey": "LP Demand + Vickrey",
+    "lp_demand_vickrey_coarse": "LP Demand + Vickrey (coarse WTP)",
+    "lp_demand_vickrey_fine": "LP Demand + Vickrey (fine WTP)",
+    "lp_integrated_supply_demand": "LP Integrated Supply/Demand",
+    "coarse_grid_oracle": "Coarse grid oracle",
+    "fine_wtp_grid_oracle": "Fine-WTP grid oracle",
+}
+
+
+def display_name(name: str) -> str:
+    return DISPLAY_NAMES.get(name, name)
+
+
 @dataclass(frozen=True)
 class WelfareSummary:
     mechanism: str
@@ -27,20 +44,39 @@ class WelfareSummary:
 def profile_results(
     mechanisms: Sequence[Mechanism],
     profiles: Iterable[Profile],
+    *,
+    true_profiles: Iterable[Profile] | None = None,
 ) -> list[dict[str, float | int | str]]:
+    """Evaluate mechanisms on reports, optionally scoring against raw types.
+
+    When ``true_profiles`` is omitted, reports are also the true types, as in
+    the exhaustive finite-domain comparison.  Supplying raw continuous types
+    makes the synthetic comparison include report-grid rounding loss.
+    """
+
+    reported = tuple(profiles)
+    true = reported if true_profiles is None else tuple(true_profiles)
+    if len(reported) != len(true):
+        raise ValueError(
+            "reported and true profile collections must have equal length"
+        )
+
     rows = []
-    for profile_id, profile in enumerate(profiles):
-        first_best = welfare(profile, efficient_outcome(profile))
+    for profile_id, (report_profile, true_profile) in enumerate(zip(reported, true)):
+        first_best = welfare(true_profile, efficient_outcome(true_profile))
+        reported_first_best = welfare(true_profile, efficient_outcome(report_profile))
         for mechanism in mechanisms:
-            result = mechanism.run(profile)
-            achieved = result.expected_welfare(profile)
+            result = mechanism.run(report_profile)
+            achieved = result.expected_welfare(true_profile)
             rows.append(
                 {
                     "profile_id": profile_id,
                     "mechanism": mechanism.name,
                     "first_best_welfare": first_best,
+                    "reported_first_best_welfare": reported_first_best,
                     "welfare": achieved,
                     "regret": first_best - achieved,
+                    "rounding_regret": first_best - reported_first_best,
                     "budget_imbalance": sum(result.expected_transfers()),
                 }
             )
@@ -78,7 +114,7 @@ def write_rows(rows: Sequence[dict], path: str | Path) -> None:
     if not rows:
         return
     with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+        writer = csv.DictWriter(handle, fieldnames=rows[0].keys(), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -91,6 +127,7 @@ def plot_comparison(
     exhaustive_rows: Sequence[dict],
     synthetic_rows: Sequence[dict],
     output_dir: str | Path,
+    rounding_rows: Sequence[dict] = (),
 ) -> None:
     try:
         import matplotlib.pyplot as plt
@@ -105,7 +142,7 @@ def plot_comparison(
     colors = ["#7f8c8d" if "vcg" in name or "first" in name else "#2878b5" for name in names]
 
     fig, ax = plt.subplots(figsize=(12, 6))
-    ax.barh(names, ratios, color=colors)
+    ax.barh([display_name(name) for name in names], ratios, color=colors)
     ax.set_xlabel("Average welfare / first-best welfare")
     ax.set_xlim(left=min(0.0, min(ratios) - 0.05), right=max(1.02, max(ratios) + 0.05))
     ax.set_title("Exhaustive-grid welfare efficiency")
@@ -122,7 +159,13 @@ def plot_comparison(
             if row["mechanism"] == name
         )
         y = [(i + 1) / len(regrets) for i in range(len(regrets))]
-        ax.step(regrets, y, where="post", label=name, linewidth=1.5)
+        ax.step(
+            regrets,
+            y,
+            where="post",
+            label=display_name(name),
+            linewidth=1.5,
+        )
     ax.set_xlabel("Welfare regret")
     ax.set_ylabel("Cumulative share of profiles")
     ax.set_title("Exhaustive-grid regret distribution")
@@ -133,6 +176,59 @@ def plot_comparison(
     plt.close(fig)
 
     synthetic_names = list(dict.fromkeys(str(row["mechanism"]) for row in synthetic_rows))
+    synthetic_summaries = summarize(synthetic_rows)
+    synthetic_ratios = [summary.welfare_ratio for summary in synthetic_summaries]
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    positions = list(range(len(synthetic_names)))
+    ax.barh(positions, synthetic_ratios, color="#5b8ff9")
+    ax.set_yticks(positions, labels=[display_name(name) for name in synthetic_names])
+    lower = max(0.0, min(synthetic_ratios) - 0.01)
+    upper = max(1.001, max(synthetic_ratios) + 0.001)
+    ax.set_xlim(lower, upper)
+    ax.set_xlabel("Average raw welfare / continuous first-best welfare")
+    ax.set_title("Synthetic efficiency, including report-grid rounding")
+    ax.grid(axis="x", alpha=0.25)
+    for position, ratio in enumerate(synthetic_ratios):
+        ax.text(
+            min(ratio + 0.0003, upper - 0.0002),
+            position,
+            f"{ratio:.4f}",
+            va="center",
+            fontsize=9,
+        )
+    fig.tight_layout()
+    fig.savefig(output_dir / "synthetic_welfare_ratio.png", dpi=180)
+    plt.close(fig)
+
+    if rounding_rows:
+        rounding_summaries = summarize(rounding_rows)
+        rounding_names = [summary.mechanism for summary in rounding_summaries]
+        rounding_ratios = [summary.welfare_ratio for summary in rounding_summaries]
+        losses = [1.0 - ratio for ratio in rounding_ratios]
+
+        fig, ax = plt.subplots(figsize=(10, 4.5))
+        positions = list(range(len(rounding_names)))
+        ax.barh(positions, losses, color="#d98c3f")
+        ax.set_yticks(
+            positions, labels=[display_name(name) for name in rounding_names]
+        )
+        ax.set_xlabel("Welfare loss relative to continuous first best")
+        ax.set_title("Allocation loss caused by report-grid rounding")
+        ax.set_xlim(0, max(0.01, max(losses) * 1.18))
+        ax.grid(axis="x", alpha=0.25)
+        for position, loss in enumerate(losses):
+            ax.text(
+                loss + max(losses) * 0.015,
+                position,
+                f"{loss:.2%}",
+                va="center",
+                fontsize=9,
+            )
+        fig.tight_layout()
+        fig.savefig(output_dir / "synthetic_rounding_loss.png", dpi=180)
+        plt.close(fig)
+
     data = [
         [float(row["regret"]) for row in synthetic_rows if row["mechanism"] == name]
         for name in synthetic_names
@@ -147,7 +243,9 @@ def plot_comparison(
     fig, (left, right) = plt.subplots(1, 2, figsize=(14, 6))
     positions = list(range(len(synthetic_names)))
     left.barh(positions, average_regret, color="#2878b5")
-    left.set_yticks(positions, labels=synthetic_names)
+    left.set_yticks(
+        positions, labels=[display_name(name) for name in synthetic_names]
+    )
     left.set_xlabel("Mean welfare regret")
     left.set_title("Average synthetic loss")
     left.grid(axis="x", alpha=0.25)

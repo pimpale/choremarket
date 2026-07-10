@@ -88,38 +88,47 @@ def write_profiles_csv(
     path: str | Path,
     value_levels: Iterable[float],
     cost_levels: Iterable[float],
+    fine_value_levels: Iterable[float] | None = None,
 ) -> None:
     """Write long-form raw and grid-quantized bids/WTPs."""
 
     value_levels = tuple(map(float, value_levels))
     cost_levels = tuple(map(float, cost_levels))
+    fine_values = (
+        None if fine_value_levels is None else tuple(map(float, fine_value_levels))
+    )
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as handle:
+        fieldnames = [
+            "scenario_id",
+            "chore",
+            "roommate",
+            "wtp_dollars",
+            "bid_dollars",
+            "grid_wtp",
+            "grid_bid",
+        ]
+        if fine_values is not None:
+            fieldnames.append("fine_demand_grid_wtp")
         writer = csv.DictWriter(
             handle,
-            fieldnames=(
-                "scenario_id",
-                "chore",
-                "roommate",
-                "wtp_dollars",
-                "bid_dollars",
-                "grid_wtp",
-                "grid_bid",
-            ),
+            lineterminator="\n",
+            fieldnames=fieldnames,
         )
         writer.writeheader()
         for sample in profiles:
             quantized = quantize_profile(sample.types, value_levels, cost_levels)
             for i, (raw, grid) in enumerate(zip(sample.types, quantized), start=1):
-                writer.writerow(
-                    {
-                        "scenario_id": sample.scenario_id,
-                        "chore": sample.chore,
-                        "roommate": i,
-                        "wtp_dollars": raw.value,
-                        "bid_dollars": raw.cost,
-                        "grid_wtp": grid.value,
-                        "grid_bid": grid.cost,
-                    }
-                )
+                row = {
+                    "scenario_id": sample.scenario_id,
+                    "chore": sample.chore,
+                    "roommate": i,
+                    "wtp_dollars": raw.value,
+                    "bid_dollars": raw.cost,
+                    "grid_wtp": grid.value,
+                    "grid_bid": grid.cost,
+                }
+                if fine_values is not None:
+                    row["fine_demand_grid_wtp"] = _nearest(raw.value, fine_values)
+                writer.writerow(row)

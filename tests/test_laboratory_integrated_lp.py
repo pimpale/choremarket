@@ -45,3 +45,17 @@ def test_n4_reduced_grid_is_tractable_smoke():
     solution = solve_integrated_lp(domain)
     assert len(solution.mechanism.table) == 2**4
     assert audit_mechanism(solution.mechanism, domain).max_joint_deviation_gain <= 2e-6
+
+
+def test_anonymous_orbit_reduction_matches_the_labeled_lp():
+    domain = ChoreDomain.rectangular(3, [0, 1], [0, 1])
+    reduced = solve_integrated_lp(domain, regularize_transfers=False)
+    labeled = solve_integrated_lp(
+        domain,
+        enforce_anonymity=False,
+        regularize_transfers=False,
+    )
+    assert reduced.worst_case_regret == pytest.approx(
+        labeled.worst_case_regret, abs=2e-6
+    )
+    assert reduced.average_welfare == pytest.approx(labeled.average_welfare, abs=2e-6)

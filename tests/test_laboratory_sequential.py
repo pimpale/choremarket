@@ -1,12 +1,13 @@
 import pytest
 
 from laboratory.audit import audit_mechanism
+from laboratory.demand_lp import audit_demand_solution
 from laboratory.domain import ChoreDomain, Type
+from laboratory.evaluation import profile_results
 from laboratory.sequential import (
     EqualShareMajoritySequential,
     EqualSplitVickreyFaltingsFair,
-    OptimizedDemandSequential,
-    demand_branch_library,
+    UnrestrictedDemandSequential,
     procurement,
 )
 
@@ -40,16 +41,19 @@ def test_faltings_fair_excludes_demand_agents_not_supply_bidders():
         assert sum(mass) == pytest.approx(0, abs=1e-9)
 
 
-def test_every_demand_branch_exactly_funds_the_vickrey_price():
-    for branch in demand_branch_library(4, 12):
-        assert sum(branch.charges) == pytest.approx(12)
+def test_unrestricted_demand_lp_is_wtp_dsic_and_recovers_the_fixed_price():
+    mechanism = UnrestrictedDemandSequential(DOMAIN)
+    for solution in mechanism.solutions.values():
+        audit = audit_demand_solution(solution)
+        assert audit["max_wtp_deviation_gain"] <= 2e-6
+        assert audit["max_conditional_balance_error"] <= 2e-6
 
 
 def test_composed_vickrey_demand_rules_are_audited_for_joint_deviations():
     mechanisms = (
         EqualShareMajoritySequential(),
         EqualSplitVickreyFaltingsFair(),
-        OptimizedDemandSequential(DOMAIN),
+        UnrestrictedDemandSequential(DOMAIN),
     )
     for mechanism in mechanisms:
         audit = audit_mechanism(mechanism, DOMAIN)
@@ -59,3 +63,14 @@ def test_composed_vickrey_demand_rules_are_audited_for_joint_deviations():
     majority = audit_mechanism(EqualShareMajoritySequential(), DOMAIN)
     assert majority.max_value_only_gain > 0
     assert majority.max_cost_only_gain > 0
+
+
+def test_unrestricted_demand_lp_weakly_improves_faltings_worst_regret():
+    faltings = EqualSplitVickreyFaltingsFair()
+    demand_lp = UnrestrictedDemandSequential(DOMAIN)
+    rows = profile_results([faltings, demand_lp], DOMAIN.profiles())
+    worst = {
+        mechanism: max(float(row["regret"]) for row in rows if row["mechanism"] == mechanism)
+        for mechanism in (faltings.name, demand_lp.name)
+    }
+    assert worst[demand_lp.name] <= worst[faltings.name] + 2e-6

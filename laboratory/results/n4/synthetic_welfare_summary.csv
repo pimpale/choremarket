@@ -1,0 +1,6 @@
+mechanism,profiles,average_welfare,average_first_best,welfare_ratio,worst_case_regret,average_regret,average_abs_budget_imbalance
+equal_split_first_best,500,57.87,57.87,1.0,0.0,0.0,0.0
+equal_split_vickrey_majority,500,57.54,57.87,0.9942975635044065,15.0,0.33,0.0
+equal_split_vickrey_faltings_fair,500,57.87,57.87,1.0,0.0,0.0,0.0
+lp_demand_vickrey,500,57.86999906440001,57.87,0.9999999838327288,1.50000019516483e-06,9.355999857376674e-07,2.291500322826323e-16
+lp_integrated_supply_demand,500,57.870000000000005,57.87,1.0000000000000002,0.0,-1.1581846592889633e-15,7.186695683087123e-15
