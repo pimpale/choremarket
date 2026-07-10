@@ -92,17 +92,27 @@ audit. This isolates the strategic cost created by sequential composition.
 ### 5. LP Integrated Supply/Demand
 
 The full LP jointly chooses probabilities over `{no chore, roommate 0 performs,
-..., roommate n-1 performs}` and probability-weighted, outcome-contingent
-transfers. It enforces:
+..., roommate n-1 performs}` and each roommate's expected transfer per report
+profile. Outcome-contingent transfers are reconstructed after the solve by
+spreading each expected transfer over the performing outcomes in proportion to
+their probabilities — a lossless reduction, since IC, regret, and welfare only
+depend on expected transfers, and the reconstruction preserves:
 
 - DSIC in expectation against every joint `(v,c) -> (v_hat,c_hat)` report;
 - exact budget balance for every report profile and realized outcome;
 - zero transfers when no chore is done.
 
-Worst-case welfare regret is minimized first. Average welfare is a second-pass
-tie-breaker. Small grids use a third pass to minimize absolute transfer mass;
-fine grids skip that payment-only pass because it doubles the variable count and
-does not affect welfare, IC, or BB.
+On large domains the IC constraints are also generated lazily: grid-adjacent
+misreports seed the model and cutting rounds add only the rows a candidate
+solution violates (a few hundred out of tens of thousands in practice), with a
+final full sweep guaranteeing every misreport gains at most `ic_tolerance`.
+
+Worst-case welfare regret and average welfare are combined into one scalarized
+objective, `regret - 1e-4 * average_welfare`, replacing the former two-pass
+lexicographic solve; the regret reported can exceed the true minimax value by
+at most `1e-4` times the domain's welfare range. Small grids keep a final pass
+that minimizes absolute expected transfers to select a numerically tame payment
+rule; fine grids skip that payment-only pass.
 
 No ex-post, interim, or ex-ante IR constraint is included. True ex-ante utility
 under the uniform exhaustive-grid prior is reported as an audit statistic. With
@@ -112,11 +122,12 @@ constraint redundant here. Profile-wise utilities can still be negative.
 
 ### Transfer bound
 
-The LP uses transfer mass `z=x*t`. Constraints `|z| <= M*x` prevent a
-zero-probability outcome from carrying phantom transfers, so a finite
-conditional-transfer bound `M` is required. The solution reports whether the
-bound is active. Previous cap checks on the `n=3` grid found identical welfare
-objectives from `M=180` through `M=1440`.
+Reconstructed transfer mass satisfies `|z| <= M*x`, which prevents a
+zero-probability outcome from carrying phantom transfers; in the reduced LP
+this appears as the aggregated bound `|t| <= M*(1-x_null)` on expected
+transfers, so a finite conditional-transfer bound `M` is still required. The
+solution reports whether the bound is active. Previous cap checks on the `n=3`
+grid found identical welfare objectives from `M=180` through `M=1440`.
 
 ## Exact symmetry reduction
 
@@ -176,11 +187,16 @@ uv run --extra laboratory python -m laboratory.run_experiment \
 uv run --extra laboratory --extra dev pytest -q
 ```
 
-HiGHS' default LP method may remain mostly single-core even when its thread cap
-is larger than one. Configure the cap with `CHOREMARKET_LP_THREADS` (default 8)
-and optionally experiment with `CHOREMARKET_LP_METHOD=hipo`, `pdlp`, or
-`simplex`. On this constraint-heavy LP, automatic/serial selection was faster
-than forced parallel simplex; orbit reduction produced the meaningful speedup.
+The single-solve integrated LP now defaults to HiGHS interior point with
+crossover disabled (`run_crossover=off`), which parallelizes and skips the
+often-dominant crossover cleanup; the interior optimum also avoids the
+degenerate-vertex transfer branches simplex solutions produced. Multi-pass
+solves (the demand LPs and the small-grid regularization pass) keep the HiGHS
+default, because tie constraints leave the feasible set without an interior,
+where pure IPM fails. Override globally with `CHOREMARKET_LP_METHOD`
+(`simplex`, `pdlp`, ...) or re-enable crossover with
+`CHOREMARKET_LP_CROSSOVER=on`; configure the thread cap with
+`CHOREMARKET_LP_THREADS` (default 8).
 
 ## Checked-in results
 

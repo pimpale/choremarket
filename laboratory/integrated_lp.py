@@ -1,8 +1,16 @@
 """Full finite-domain randomized mechanism LP.
 
-The LP jointly chooses allocation probabilities and outcome-contingent transfer
-mass. Incentive constraints cover every joint (value, cost) misreport. Budget
-balance is imposed separately for every profile and realized outcome.
+The LP chooses allocation probabilities and each agent's expected transfer per
+report profile. Incentives, regret, and welfare only depend on expected
+transfers, so the per-outcome transfer mass is reconstructed after the solve
+by spreading each expected transfer over the performing outcomes in proportion
+to their probabilities. With the aggregated bound |t| <= bound * (1 - x_null)
+this reconstruction satisfies per-outcome budget balance, the no-transfer null
+outcome, and the conditional bound |z| <= bound * x exactly, and any feasible
+per-outcome transfer plan projects onto a feasible expected-transfer plan, so
+the reduction is lossless. Incentive constraints cover every joint
+(value, cost) misreport; on large domains they are enforced lazily by
+cutting rounds that add only the violated rows.
 """
 
 from __future__ import annotations
@@ -12,7 +20,9 @@ from dataclasses import dataclass
 from itertools import combinations_with_replacement
 from math import factorial
 
-from .domain import ChoreDomain, Outcome, Profile, gross_utility, replace_type, welfare
+import numpy as np
+
+from .domain import ChoreDomain, Outcome, Profile, Type, gross_utility, replace_type, welfare
 from .mechanism import Lottery, TabularMechanism
 from .solver import pyomo, solve
 
@@ -39,8 +49,20 @@ def solve_integrated_lp(
     enforce_anonymity: bool = True,
     regularize_transfers: bool | None = None,
     regret_tolerance: float = 1e-7,
+    welfare_weight: float = 1e-4,
+    ic_tolerance: float = 1e-6,
 ) -> IntegratedLPSolution:
-    """Solve the lexicographic minimax-regret/average-welfare design LP."""
+    """Solve the scalarized minimax-regret/average-welfare design LP.
+
+    The lexicographic (regret first, welfare second) objective is scalarized
+    into ``regret - welfare_weight * average_welfare`` so one solve replaces
+    two. The reported worst-case regret can exceed the true minimax value by
+    at most ``welfare_weight`` times the average-welfare range of the domain.
+
+    On domains too fine for the transfer-regularization pass, IC constraints
+    are generated lazily: grid-adjacent misreports seed the model and cutting
+    rounds add any misreport whose gain exceeds ``ic_tolerance``.
+    """
 
     pyo = pyomo()
     all_profiles = tuple(domain.profiles())
@@ -90,7 +112,7 @@ def solve_integrated_lp(
     model.O = pyo.RangeSet(0, len(outcomes) - 1)
     model.I = pyo.RangeSet(0, domain.n - 1)
     model.x = pyo.Var(model.P, model.O, domain=pyo.NonNegativeReals, bounds=(0.0, 1.0))
-    model.z = pyo.Var(model.P, model.O, model.I, domain=pyo.Reals)
+    model.t = pyo.Var(model.P, model.I, domain=pyo.Reals)
     model.regret = pyo.Var(domain=pyo.NonNegativeReals)
 
     model.simplex = pyo.Constraint(
@@ -99,32 +121,28 @@ def solve_integrated_lp(
     )
     model.balance = pyo.Constraint(
         model.P,
-        model.O,
-        rule=lambda m, p, o: sum(m.z[p, o, i] for i in m.I) == 0,
+        rule=lambda m, p: sum(m.t[p, i] for i in m.I) == 0,
     )
+    # Aggregate of the per-outcome bound |z| <= bound * x over the performing
+    # outcomes; outcome 0 is the null outcome, which carries no transfers.
     model.transfer_upper = pyo.Constraint(
         model.P,
-        model.O,
         model.I,
-        rule=lambda m, p, o, i: m.z[p, o, i] <= bound * m.x[p, o],
+        rule=lambda m, p, i: m.t[p, i] <= bound * (1 - m.x[p, 0]),
     )
     model.transfer_lower = pyo.Constraint(
         model.P,
-        model.O,
         model.I,
-        rule=lambda m, p, o, i: m.z[p, o, i] >= -bound * m.x[p, o],
-    )
-    model.no_chore_transfers = pyo.Constraint(
-        model.P,
-        model.I,
-        rule=lambda m, p, i: m.z[p, 0, i] == 0,
+        rule=lambda m, p, i: m.t[p, i] >= -bound * (1 - m.x[p, 0]),
     )
 
     def expected_utility_expr(m, report_p: int, agent: int, true_type):
-        return sum(
-            m.x[report_p, o] * gross_utility(agent, true_type, outcomes[o])
-            + m.z[report_p, o, agent]
-            for o in m.O
+        return (
+            sum(
+                m.x[report_p, o] * gross_utility(agent, true_type, outcomes[o])
+                for o in m.O
+            )
+            + m.t[report_p, agent]
         )
 
     deviation_keys = []
@@ -149,8 +167,6 @@ def solve_integrated_lp(
                     deviation_target[key] = (profile_index[canonical], old_to_new[i])
                 else:
                     deviation_target[key] = (profile_index[deviated], i)
-    model.D = pyo.Set(initialize=deviation_keys, dimen=3)
-
     def dsic_rule(m, p, i, r):
         true_type = profiles[p][i]
         deviating_p, deviating_i = deviation_target[(p, i, r)]
@@ -158,7 +174,62 @@ def solve_integrated_lp(
             m, deviating_p, deviating_i, true_type
         )
 
-    model.dsic = pyo.Constraint(model.D, rule=dsic_rule)
+    # The regularization re-solves must keep every IC row in the model, so
+    # lazy generation is only used on the large single-solve domains.
+    lazy_ic = not regularize
+    if lazy_ic:
+        type_index = {t: k for k, t in enumerate(domain.types)}
+        value_levels = sorted({t.value for t in domain.types})
+        cost_levels = sorted({t.cost for t in domain.types})
+
+        def is_adjacent(reported: Type, alternate: Type) -> bool:
+            if reported.cost == alternate.cost:
+                return (
+                    abs(
+                        value_levels.index(reported.value)
+                        - value_levels.index(alternate.value)
+                    )
+                    == 1
+                )
+            if reported.value == alternate.value:
+                return (
+                    abs(
+                        cost_levels.index(reported.cost)
+                        - cost_levels.index(alternate.cost)
+                    )
+                    == 1
+                )
+            return False
+
+        key_report = np.array([p for p, _, _ in deviation_keys])
+        key_agent = np.array([i for _, i, _ in deviation_keys])
+        key_type = np.array(
+            [type_index[profiles[p][i]] for p, i, _ in deviation_keys]
+        )
+        targets = [deviation_target[key] for key in deviation_keys]
+        key_dev_report = np.array([q for q, _ in targets])
+        key_dev_agent = np.array([j for _, j in targets])
+        gross = np.array(
+            [
+                [
+                    [gross_utility(i, t, outcome) for outcome in outcomes]
+                    for i in range(domain.n)
+                ]
+                for t in domain.types
+            ]
+        )
+        enforced = np.array(
+            [
+                is_adjacent(profiles[p][i], domain.types[r])
+                for p, i, r in deviation_keys
+            ]
+        )
+        model.dsic = pyo.ConstraintList()
+        for k in np.nonzero(enforced)[0]:
+            model.dsic.add(dsic_rule(model, *deviation_keys[int(k)]))
+    else:
+        model.D = pyo.Set(initialize=deviation_keys, dimen=3)
+        model.dsic = pyo.Constraint(model.D, rule=dsic_rule)
 
     if enforce_anonymity:
         # A canonical profile can contain identical types. Swapping two such
@@ -186,15 +257,8 @@ def solve_integrated_lp(
             model.S, model.O, rule=stabilizer_allocation
         )
 
-        def stabilizer_transfer(m, p, left, o, i):
-            outcome = outcomes[o]
-            target_outcome = None if outcome is None else swapped(outcome, left)
-            return m.z[p, o, i] == m.z[
-                p, outcomes.index(target_outcome), swapped(i, left)
-            ]
-
         model.stabilizer_transfer = pyo.Constraint(
-            model.S, model.O, model.I, rule=stabilizer_transfer
+            model.S, rule=lambda m, p, left: m.t[p, left] == m.t[p, left + 1]
         )
 
     optimal_welfare = [
@@ -212,61 +276,119 @@ def solve_integrated_lp(
     average_welfare_expr = sum(
         profile_weights[p] * achieved_welfare(model, p) for p in model.P
     )
-    model.primary_objective = pyo.Objective(expr=model.regret, sense=pyo.minimize)
-    persistent_solver = solve(model, solver_name)
-    best_regret = float(pyo.value(model.regret))
-
-    model.primary_objective.deactivate()
-    model.regret_tie = pyo.Constraint(expr=model.regret <= best_regret + regret_tolerance)
-    model.secondary_objective = pyo.Objective(
-        expr=average_welfare_expr, sense=pyo.maximize
+    if welfare_weight <= 0:
+        raise ValueError("welfare_weight must be positive")
+    model.scalar_objective = pyo.Objective(
+        expr=model.regret - welfare_weight * average_welfare_expr,
+        sense=pyo.minimize,
     )
-    solve(model, solver_name, solver=persistent_solver)
+    # Interior point without crossover only when regularization is skipped;
+    # the regularization re-solve pins the objectives to their optima, which
+    # leaves the feasible set without an interior and defeats pure IPM.
+    persistent_solver = solve(
+        model, solver_name, method="ipm" if lazy_ic else None
+    )
+
+    if lazy_ic:
+        for cutting_round in range(1, 26):
+            x_values = np.array(
+                [[pyo.value(model.x[p, o]) for o in model.O] for p in model.P]
+            )
+            t_values = np.array(
+                [[pyo.value(model.t[p, i]) for i in model.I] for p in model.P]
+            )
+            gross_expected = np.einsum("po,tio->pti", x_values, gross)
+            truthful = (
+                gross_expected[key_report, key_type, key_agent]
+                + t_values[key_report, key_agent]
+            )
+            deviating = (
+                gross_expected[key_dev_report, key_type, key_dev_agent]
+                + t_values[key_dev_report, key_dev_agent]
+            )
+            gains = deviating - truthful
+            # Rows already in the model hold to solver tolerance; excluding
+            # them keeps residual noise from re-triggering rounds.
+            gains[enforced] = 0.0
+            violated = np.nonzero(gains > ic_tolerance)[0]
+            if violated.size == 0:
+                break
+            print(
+                f"IC cutting round {cutting_round}: adding {violated.size} of "
+                f"{len(deviation_keys)} rows (max gain {gains.max():.3g})",
+                flush=True,
+            )
+            for k in violated:
+                model.dsic.add(dsic_rule(model, *deviation_keys[int(k)]))
+            enforced[violated] = True
+            solve(model, solver_name, solver=persistent_solver)
+        else:
+            raise RuntimeError("IC constraint generation did not converge")
 
     if regularize:
         # IC/BB payment rules are often non-unique. Select a numerically tame
         # rule on small grids without changing either welfare objective. This
-        # pass doubles the variable count, so fine grids skip it by default.
+        # pass adds a variable per expected transfer, so fine grids skip it
+        # by default.
+        best_regret = float(pyo.value(model.regret))
         best_average = float(pyo.value(average_welfare_expr))
-        model.secondary_objective.deactivate()
+        model.scalar_objective.deactivate()
+        model.regret_tie = pyo.Constraint(
+            expr=model.regret <= best_regret + regret_tolerance
+        )
         model.average_tie = pyo.Constraint(
             expr=average_welfare_expr >= best_average - regret_tolerance
         )
-        model.abs_z = pyo.Var(model.P, model.O, model.I, domain=pyo.NonNegativeReals)
-        model.abs_z_positive = pyo.Constraint(
+        model.abs_t = pyo.Var(model.P, model.I, domain=pyo.NonNegativeReals)
+        model.abs_t_positive = pyo.Constraint(
             model.P,
-            model.O,
             model.I,
-            rule=lambda m, p, o, i: m.abs_z[p, o, i] >= m.z[p, o, i],
+            rule=lambda m, p, i: m.abs_t[p, i] >= m.t[p, i],
         )
-        model.abs_z_negative = pyo.Constraint(
+        model.abs_t_negative = pyo.Constraint(
             model.P,
-            model.O,
             model.I,
-            rule=lambda m, p, o, i: m.abs_z[p, o, i] >= -m.z[p, o, i],
+            rule=lambda m, p, i: m.abs_t[p, i] >= -m.t[p, i],
         )
         model.tertiary_objective = pyo.Objective(
-            expr=sum(model.abs_z[p, o, i] for p in model.P for o in model.O for i in model.I),
+            expr=sum(model.abs_t[p, i] for p in model.P for i in model.I),
             sense=pyo.minimize,
         )
         solve(model, solver_name, solver=persistent_solver)
 
     reduced_table: dict[Profile, Lottery] = {}
     for p, profile in enumerate(profiles):
+        # Probability branches below the LP solve tolerance are numerical
+        # noise; discard them and renormalize the realized lottery.
+        kept = {
+            o: probability
+            for o in range(len(outcomes))
+            if (probability := max(0.0, float(pyo.value(model.x[p, o])))) > 1e-10
+        }
+        performing_mass = sum(
+            probability for o, probability in kept.items() if outcomes[o] is not None
+        )
+        expected_transfers = [
+            float(pyo.value(model.t[p, i])) for i in range(domain.n)
+        ]
+        # Remove the residual floating-point budget error exactly.
+        expected_transfers[-1] -= sum(expected_transfers)
+
         raw_probabilities: dict[Outcome, float] = {}
         raw_masses: dict[Outcome, tuple[float, ...]] = {}
-        for o, outcome in enumerate(outcomes):
-            probability = max(0.0, float(pyo.value(model.x[p, o])))
-            # HiGHS may return ~1e-9 probability with much larger conditional
-            # transfers at a degenerate vertex. Such branches are below the LP
-            # solve tolerance; discard them and renormalize the realized lottery.
-            if probability <= 1e-10:
-                continue
-            transfers = [float(pyo.value(model.z[p, o, i])) for i in range(domain.n)]
-            # Remove the residual floating-point budget error exactly.
-            transfers[-1] -= sum(transfers)
+        for o, probability in kept.items():
+            outcome = outcomes[o]
+            if outcome is None or performing_mass <= 1e-10:
+                mass = (0.0,) * domain.n
+            else:
+                # Proportional disaggregation of the expected transfer; see
+                # the module docstring.
+                mass = tuple(
+                    transfer * probability / performing_mass
+                    for transfer in expected_transfers
+                )
             raw_probabilities[outcome] = probability
-            raw_masses[outcome] = tuple(transfers)
+            raw_masses[outcome] = mass
 
         total_probability = sum(raw_probabilities.values())
         probabilities = {

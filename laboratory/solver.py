@@ -22,7 +22,11 @@ def default_threads() -> int:
     return min(8, os.cpu_count() or 1)
 
 
-def make_solver(solver_name: str = "appsi_highs", threads: int | None = None):
+def make_solver(
+    solver_name: str = "appsi_highs",
+    threads: int | None = None,
+    method: str | None = None,
+):
     pyo = pyomo()
     solver = pyo.SolverFactory(solver_name)
     if not solver.available(exception_flag=False):
@@ -32,9 +36,17 @@ def make_solver(solver_name: str = "appsi_highs", threads: int | None = None):
         solver.options["primal_feasibility_tolerance"] = 1e-9
         solver.options["dual_feasibility_tolerance"] = 1e-9
         solver.options["ipm_optimality_tolerance"] = 1e-10
-        method = os.environ.get("CHOREMARKET_LP_METHOD")
-        if method:
-            solver.options["solver"] = method
+        chosen = os.environ.get("CHOREMARKET_LP_METHOD") or method
+        if chosen:
+            solver.options["solver"] = chosen
+        if chosen == "ipm":
+            # Skip crossover: the interior optimum is fine for our purposes
+            # and crossover often dominates barrier time. Only safe for
+            # single-solve models — tie-constrained re-solves leave the
+            # feasible set without an interior, where pure IPM fails.
+            solver.options["run_crossover"] = os.environ.get(
+                "CHOREMARKET_LP_CROSSOVER", "off"
+            )
     return solver
 
 
@@ -43,9 +55,10 @@ def solve(
     solver_name: str = "appsi_highs",
     threads: int | None = None,
     solver=None,
+    method: str | None = None,
 ):
     pyo = pyomo()
-    solver = solver or make_solver(solver_name, threads)
+    solver = solver or make_solver(solver_name, threads, method)
     result = solver.solve(model)
     if result.solver.termination_condition != pyo.TerminationCondition.optimal:
         raise RuntimeError(
