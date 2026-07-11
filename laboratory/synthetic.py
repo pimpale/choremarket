@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from .domain import Profile, Type
+from .domain import Profile, Type, nearest_level, quantize_profile
 
 
 # WTP anchors and observed winning asks come from the anonymized household
@@ -31,10 +31,6 @@ class SyntheticProfile:
     scenario_id: int
     chore: str
     types: Profile
-
-
-def _nearest(value: float, levels: tuple[float, ...]) -> float:
-    return min(levels, key=lambda level: (abs(level - value), level))
 
 
 def generate_profiles(
@@ -73,14 +69,33 @@ def generate_profiles(
     return generated
 
 
-def quantize_profile(
-    profile: Profile,
-    value_levels: Iterable[float],
-    cost_levels: Iterable[float],
-) -> Profile:
-    values = tuple(map(float, value_levels))
-    costs = tuple(map(float, cost_levels))
-    return tuple(Type(_nearest(t.value, values), _nearest(t.cost, costs)) for t in profile)
+def generate_uniform_profiles(
+    n: int,
+    count: int,
+    value_high: float,
+    cost_high: float,
+    seed: int = 20260710,
+) -> list[Profile]:
+    """Draw i.i.d. uniform value/cost profiles for quantization-loss CDFs.
+
+    Uniform priors on ``[0, value_high] x [0, cost_high]`` give a prior-free
+    view of report-grid rounding loss; cap the ranges at the top rounding
+    boundary so top-coding of an unbounded tail does not dominate the figure.
+    """
+
+    if n < 2 or count <= 0:
+        raise ValueError("n must be at least two and count must be positive")
+    rng = random.Random(seed)
+    return [
+        tuple(
+            Type(
+                round(rng.uniform(0.0, value_high), 2),
+                round(rng.uniform(0.0, cost_high), 2),
+            )
+            for _ in range(n)
+        )
+        for _ in range(count)
+    ]
 
 
 def write_profiles_csv(
@@ -130,5 +145,5 @@ def write_profiles_csv(
                     "grid_bid": grid.cost,
                 }
                 if fine_values is not None:
-                    row["fine_demand_grid_wtp"] = _nearest(raw.value, fine_values)
+                    row["fine_demand_grid_wtp"] = nearest_level(raw.value, fine_values)
                 writer.writerow(row)

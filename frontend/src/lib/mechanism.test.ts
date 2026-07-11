@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   computeBalances,
-  computeFinancing,
-  computeFinancingCashflow,
   computeLedger,
   flatPayout,
   ledgerForInstance,
@@ -20,9 +18,15 @@ const people: Person[] = [
 ];
 const P = (wtp_cents: number, bid_cents: number): Pref => ({ wtp_cents, bid_cents });
 
+// Blair is the cheapest (bid 700); the Vickrey price is Alex's 900.
+const richPrefs = { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) };
+
+const paymentSum = (payments: Record<number, number>) =>
+  Object.values(payments).reduce((s, a) => s + a, 0);
+
 describe('assignment', () => {
   it('assigns the lowest bidder', () => {
-    const led = computeLedger(people, { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) }, 'agv');
+    const led = computeLedger(people, richPrefs, 'first-best');
     expect(led.assigneeId).toBe(2);
   });
 
@@ -31,75 +35,126 @@ describe('assignment', () => {
       { id: 1, name: 'Blair' },
       { id: 2, name: 'Alex' },
     ];
-    const led = computeLedger(two, { 1: P(1000, 500), 2: P(1000, 500) }, 'agv');
+    const led = computeLedger(two, { 1: P(1000, 500), 2: P(1000, 500) }, 'first-best');
     expect(led.assigneeId).toBe(2); // "Alex" < "Blair"
   });
 });
 
-describe('AGV (d\'AGVA expected externality)', () => {
-  it('matches t_i = (sum_v - n*v_i)/(n-1) and is budget-balanced', () => {
-    // v = {Alex:1500, Blair:1200-700=500, Casey:1800}, sum_v=3800, n=3.
-    const led = computeLedger(people, { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) }, 'agv');
-    expect(led.payments).toEqual({ 1: 350, 2: -1150, 3: 800 });
-    expect(led.payments[1] + led.payments[2] + led.payments[3]).toBe(0);
-  });
-});
-
-describe('VCG (Clarke)', () => {
-  it('pays the doer the second-lowest bid; non-doers pay 0; house eats the rest', () => {
-    const led = computeLedger(people, { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) }, 'vcg');
-    expect(led.assigneeId).toBe(2);
-    expect(led.payments).toEqual({ 1: 0, 2: -900, 3: 0 });
-    expect(led.payments[1] + led.payments[2] + led.payments[3]).toBe(-900); // house deficit 900
+describe('first-best (equal split of the doer\'s own bid)', () => {
+  it('pays the doer their bid, financed by an equal per-head split', () => {
+    const led = computeLedger(people, richPrefs, 'first-best');
+    // Share = 700/3; the doer nets 700 - share. balancedRound keeps the sum exact.
+    expect(led.payments).toEqual({ 1: 233, 2: -467, 3: 234 });
+    expect(paymentSum(led.payments)).toBe(0);
+    expect(led.detail?.priceCents).toBe(700);
+    expect(led.detail?.priceSetterId).toBeNull(); // first price: the doer's own bid
   });
 
-  it('charges a pivotal non-doer the shortfall', () => {
-    // Without Blair's WTP (700) the total (400) can't cover the lowest bid (500).
-    const led = computeLedger(people, { 1: P(100, 500), 2: P(700, 900), 3: P(300, 1000) }, 'vcg');
-    expect(led.assigneeId).toBe(1);
-    expect(led.payments).toEqual({ 1: -900, 2: 100, 3: 0 });
-  });
-});
-
-describe('Bailey-Cavallo (symmetric Cavallo: rebate surplus / share deficit)', () => {
-  it('adjusts each VCG payment by h_i = R_{-i}/n and shares the deficit back', () => {
-    // base VCG = {1:0, 2:-900, 3:0}; R_{-1}=R_{-2}=-1100, R_{-3}=-900 (n=3).
-    const prefs = { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) };
-    const led = computeLedger(people, prefs, 'bailey-cavallo');
-    expect(led.assigneeId).toBe(2);
-    expect(led.payments).toEqual({ 1: 367, 2: -533, 3: 300 });
-  });
-
-  it('differs from VCG -- the charge actually moves money', () => {
-    // base VCG = {1:-900, 2:100, 3:0}; R_{-1}=-100, R_{-2}=0, R_{-3}=-300.
-    const prefs = { 1: P(100, 500), 2: P(700, 900), 3: P(300, 1000) };
-    const bc = computeLedger(people, prefs, 'bailey-cavallo').payments;
-    const vcg = computeLedger(people, prefs, 'vcg').payments;
-    expect(bc).not.toEqual(vcg);
-    expect(bc).toEqual({ 1: -867, 2: 100, 3: 100 });
-  });
-
-  it('conserves in balances (nets + house = 0)', () => {
-    const prefsByChore = { 5: { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) } };
-    const done: RawInstance = { id: 1, recurring_chore_id: 5, assignee_id: null, status: 'done', payout_cents: 0 };
-    const b = computeBalances([done], people, prefsByChore, 'bailey-cavallo');
-    expect(b.nets.reduce((s, n) => s + n.net_cents, 0) + b.houseCents).toBe(0);
-  });
-});
-
-describe('not worth doing', () => {
-  it.each(['agv', 'vcg'] as const)('skips when total WTP is below the lowest bid (%s)', (mechanism) => {
-    const led = computeLedger(people, { 1: P(100, 900), 2: P(200, 700), 3: P(150, 1100) }, mechanism);
+  it('skips when total WTP is below the lowest bid', () => {
+    const led = computeLedger(people, { 1: P(100, 900), 2: P(200, 700), 3: P(150, 1100) }, 'first-best');
     expect(led.worthDoing).toBe(false);
     expect(led.assigneeId).toBeNull();
     expect(led.payments).toEqual({});
     expect(led.surplusCents).toBe(450 - 700);
+    expect(led.skipReason).toMatch(/WTP/);
+  });
+});
+
+describe('vickrey-majority (second price + strict-majority funding)', () => {
+  it('pays the doer the second-lowest bid, split equally, when a majority accepts the share', () => {
+    const led = computeLedger(people, richPrefs, 'vickrey-majority');
+    expect(led.assigneeId).toBe(2);
+    // Price = 900 (Alex's bid), share = 300, everyone's WTP covers it.
+    expect(led.payments).toEqual({ 1: 300, 2: -600, 3: 300 });
+    expect(paymentSum(led.payments)).toBe(0);
+    expect(led.detail).toMatchObject({ priceCents: 900, priceSetterId: 1, shareCents: 300, supporters: 3, required: 2 });
   });
 
-  it('forced assignee overrides "not worth doing"', () => {
-    const led = computeLedger([people[0], people[1]], { 1: P(100, 900), 2: P(50, 700) }, 'vcg', 1);
+  it('skips when no strict majority accepts the per-head share, even at positive surplus', () => {
+    // Surplus is 350 - 700 < 0 here anyway, but the binding reason is the vote:
+    // share = 300 and nobody's WTP reaches it.
+    const led = computeLedger(people, { 1: P(100, 900), 2: P(50, 700), 3: P(200, 1100) }, 'vickrey-majority');
+    expect(led.worthDoing).toBe(false);
+    expect(led.payments).toEqual({});
+    expect(led.detail?.supporters).toBe(0);
+    expect(led.skipReason).toMatch(/majority|accept/);
+  });
+
+  it('funds a negative-surplus chore when a majority accepts the share', () => {
+    // Total WTP 620 < bid 700, but two of three accept the 300 share.
+    const led = computeLedger(people, { 1: P(310, 900), 2: P(310, 700), 3: P(0, 1100) }, 'vickrey-majority');
+    expect(led.surplusCents).toBeLessThan(0);
+    expect(led.worthDoing).toBe(true);
+    expect(led.payments).toEqual({ 1: 300, 2: -600, 3: 300 });
+  });
+
+  it('forced assignee overrides a failed vote', () => {
+    const led = computeLedger([people[0], people[1]], { 1: P(100, 900), 2: P(50, 700) }, 'vickrey-majority', 1);
     expect(led.worthDoing).toBe(true);
     expect(led.assigneeId).toBe(1);
+    // Price = the other roommate's bid (700), split two ways.
+    expect(led.payments).toEqual({ 1: -350, 2: 350 });
+  });
+});
+
+describe('vickrey-faltings (second price + jury draw + fairness side-payments)', () => {
+  // netValues (wtp - 300 share): Alex -200, Blair +400, Casey 0. The jury's
+  // verdict depends on who is excluded, and Blair/Casey carry nonzero
+  // fairness side-payments (computed only from the others' reports).
+  const pivotalPrefs = { 1: P(100, 500), 2: P(700, 900), 3: P(300, 1000) };
+
+  it('reduces to the plain equal split when every jury agrees and no one is pivotal', () => {
+    for (const drawKey of [0, 1, 2]) {
+      const led = computeLedger(people, richPrefs, 'vickrey-faltings', null, true, drawKey);
+      expect(led.payments).toEqual({ 1: 300, 2: -600, 3: 300 });
+    }
+  });
+
+  it('funds and folds the p-scaled fairness adjustments into the transfers', () => {
+    const led = computeLedger(people, pivotalPrefs, 'vickrey-faltings', null, true, 0);
+    expect(led.assigneeId).toBe(1); // Alex bids 500
+    expect(led.detail).toMatchObject({ priceCents: 900, excludedId: 1, juryFunds: true, fundingJuries: 2 });
+    // Blair's expected pivot charge is 200/3, scaled by n/k = 3/2 to the 100
+    // she pays per funded draw; Casey receives it as a rebate.
+    expect(led.payments).toEqual({ 1: -600, 2: 400, 3: 200 });
+    expect(paymentSum(led.payments)).toBe(0);
+  });
+
+  it('scaling keeps expected payments equal to the unconditional mechanism', () => {
+    // Across the three equiprobable draws, two fund with payments
+    // {-600, 400, 200} and one declines with none. The totals match 3x the
+    // expected payments of the mechanism that pays fairness in every branch
+    // (2 funded splits + unscaled fairness of -0/+66.67/-66.67 in all three).
+    const totals: Record<number, number> = { 1: 0, 2: 0, 3: 0 };
+    for (const drawKey of [0, 1, 2]) {
+      const led = computeLedger(people, pivotalPrefs, 'vickrey-faltings', null, true, drawKey);
+      for (const [id, amount] of Object.entries(led.payments)) totals[Number(id)] += amount;
+    }
+    expect(totals).toEqual({ 1: -1200, 2: 800, 3: 400 });
+  });
+
+  it('skips when the drawn jury values the chore below its price', () => {
+    // Excluding Blair (the fan) leaves a jury with net value -200.
+    const led = computeLedger(people, pivotalPrefs, 'vickrey-faltings', null, true, 1);
+    expect(led.detail?.excludedId).toBe(2);
+    expect(led.worthDoing).toBe(false);
+    expect(led.payments).toEqual({});
+    expect(led.skipReason).toMatch(/jury/);
+  });
+
+  it('is exactly budget-balanced in every realized draw', () => {
+    for (const drawKey of [0, 1, 2]) {
+      const led = computeLedger(people, pivotalPrefs, 'vickrey-faltings', null, true, drawKey);
+      expect(paymentSum(led.payments)).toBe(0);
+    }
+  });
+
+  it('realizes the draw from the instance id', () => {
+    const prefsByChore = { 5: pivotalPrefs };
+    const base = { recurring_chore_id: 5, assignee_id: null, status: 'pending', payout_cents: 0 } as const;
+    // id 3 -> excluded Alex (funds); id 1 -> excluded Blair (declines).
+    expect(ledgerForInstance({ ...base, id: 3 }, people, prefsByChore, 'vickrey-faltings').worthDoing).toBe(true);
+    expect(ledgerForInstance({ ...base, id: 1 }, people, prefsByChore, 'vickrey-faltings').worthDoing).toBe(false);
   });
 });
 
@@ -110,21 +165,15 @@ describe('one-offs', () => {
 
   it('derives a one-off ledger from per-instance prefs', () => {
     const instance: RawInstance = { id: 9, recurring_chore_id: null, assignee_id: 2, status: 'pending', payout_cents: 1200 };
-    const led = ledgerForInstance(instance, people, {}, 'agv', {
-      9: {
-        1: P(1500, 900),
-        2: P(1200, 700),
-        3: P(1800, 1100),
-      },
-    });
+    const led = ledgerForInstance(instance, people, {}, 'vickrey-majority', { 9: richPrefs });
     expect(led.assigneeId).toBe(2);
-    expect(led.payments[2]).toBe(-1150);
-    expect(Object.values(led.payments).reduce((s, a) => s + a, 0)).toBe(0);
+    expect(led.payments).toEqual({ 1: 300, 2: -600, 3: 300 });
+    expect(paymentSum(led.payments)).toBe(0);
   });
 
   it('defaults unset one-off prefs to no WTP and a very large bid', () => {
     const instance: RawInstance = { id: 10, recurring_chore_id: null, assignee_id: null, status: 'pending', payout_cents: 0 };
-    const led = ledgerForInstance(instance, people, {}, 'vcg', {
+    const led = ledgerForInstance(instance, people, {}, 'first-best', {
       10: {
         1: { wtp_cents: null, bid_cents: null },
       },
@@ -135,7 +184,7 @@ describe('one-offs', () => {
 
   it('does not force a one-off when selected assignee bid exceeds total WTP', () => {
     const instance: RawInstance = { id: 11, recurring_chore_id: null, assignee_id: 2, status: 'pending', payout_cents: 0 };
-    const led = ledgerForInstance(instance, people, {}, 'agv', {
+    const led = ledgerForInstance(instance, people, {}, 'first-best', {
       11: {
         1: P(0, 100_000_000),
         2: P(0, 100_000_000),
@@ -156,7 +205,7 @@ describe('one-offs', () => {
       payout_cents: 900,
       manual_override: true,
     };
-    const led = ledgerForInstance(instance, people, {}, 'agv');
+    const led = ledgerForInstance(instance, people, {}, 'first-best');
     expect(led.assigneeId).toBe(1);
     expect(led.displayStatus).toBe('pending');
     expect(led.payments).toEqual({ 1: -900, 2: 450, 3: 450 });
@@ -167,145 +216,24 @@ describe('display status', () => {
   it('derives skipped, but never overrides a manual done/failed', () => {
     const prefsByChore = { 5: { 1: P(100, 900), 2: P(200, 700), 3: P(150, 1100) } };
     const base = { id: 1, recurring_chore_id: 5, assignee_id: null, payout_cents: 0 } as const;
-    expect(ledgerForInstance({ ...base, status: 'pending' }, people, prefsByChore, 'agv').displayStatus).toBe('skipped');
-    expect(ledgerForInstance({ ...base, status: 'done' }, people, prefsByChore, 'agv').displayStatus).toBe('done');
+    expect(ledgerForInstance({ ...base, status: 'pending' }, people, prefsByChore, 'first-best').displayStatus).toBe('skipped');
+    expect(ledgerForInstance({ ...base, status: 'done' }, people, prefsByChore, 'first-best').displayStatus).toBe('done');
   });
 });
 
 describe('balances', () => {
-  const prefsByChore = { 5: { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) } };
+  const prefsByChore = { 5: richPrefs };
   const doneRecurring: RawInstance = { id: 1, recurring_chore_id: 5, assignee_id: null, status: 'done', payout_cents: 0 };
   const pendingRecurring: RawInstance = { ...doneRecurring, id: 2, status: 'pending' };
 
-  it('AGV nets to zero with a flat house and only counts done', () => {
-    const b = computeBalances([doneRecurring, pendingRecurring], people, prefsByChore, 'agv');
-    expect(b.houseCents).toBe(0);
-    expect(b.nets.reduce((s, n) => s + n.net_cents, 0)).toBe(0);
-  });
-
-  it('VCG runs a house deficit and conserves (nets + house = 0)', () => {
-    const b = computeBalances([doneRecurring], people, prefsByChore, 'vcg');
-    expect(b.houseCents).toBe(900);
-    expect(b.nets.reduce((s, n) => s + n.net_cents, 0) + b.houseCents).toBe(0);
-  });
-});
-
-describe('EMA financing (with VCG)', () => {
-  // Blair is the doer, owed 900/week; the weekly house deficit is 900.
-  const prefsByChore = { 5: { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) } };
-  const week = (id: number, week_start: string): RawInstance => ({
-    id, recurring_chore_id: 5, assignee_id: null, status: 'done', payout_cents: 0, week_start,
-  });
-  const financed = (weeks: RawInstance[]) =>
-    computeBalances(weeks, people, prefsByChore, 'vcg', {}, [], 'ema');
-
-  it('matches plain VCG for a single week (no history -> no levy yet)', () => {
-    const b = financed([week(1, '2026-06-07')]);
-    const plain = computeBalances([week(1, '2026-06-07')], people, prefsByChore, 'vcg');
-    expect(b.nets).toEqual(plain.nets);
-    expect(b.houseCents).toBe(900);
-    expect(b.weeklyRateCents).toBe(Math.round(900 * 1.025)); // rate for next week
-  });
-
-  it('levies the marked-up EMA on later weeks and always conserves', () => {
-    const b = financed([week(1, '2026-06-07'), week(2, '2026-06-14'), week(3, '2026-06-21')]);
-    // Weeks 2 and 3 each levy round(900*1.025) -> per member; week 1 none.
-    const per = Math.round(Math.round(900 * 1.025) / 3);
-    expect(b.nets.find((n) => n.id === 1)?.net_cents).toBe(2 * per); // Alex: levy only
-    expect(b.nets.find((n) => n.id === 3)?.net_cents).toBe(2 * per); // Casey: levy only
-    // Blair: owed 2700 in entitlements, less her own two levies.
-    expect(b.nets.find((n) => n.id === 2)?.net_cents).toBe(-2700 + 2 * per);
-    // Conservation holds with the house as residual counterparty.
-    expect(b.nets.reduce((s, n) => s + n.net_cents, 0) + b.houseCents).toBe(0);
-  });
-
-  it('the markup erodes the deficit into a surplus over a long run', () => {
-    const weeks = Array.from({ length: 60 }, (_, k) =>
-      week(k + 1, new Date(Date.UTC(2026, 0, 4 + 7 * k)).toISOString().slice(0, 10)),
-    );
-    // Past the ~41-week break-even, over-collection shows up as a house surplus.
-    expect(financed(weeks).houseCents).toBeLessThan(0);
-  });
-
-  it('projects a levy for an unsettled week without collecting it yet', () => {
-    const done = [week(1, '2026-06-07'), week(2, '2026-06-14')];
-    const pending: RawInstance = { ...week(3, '2026-06-21'), status: 'pending' };
-
-    const { schedule } = computeFinancing([...done, pending], people, prefsByChore, 'vcg');
-    const thisWeek = schedule.get('2026-06-21')!;
-    // Known from history (trailing EMA), but flagged as not-yet-collected.
-    expect(thisWeek.settled).toBe(false);
-    expect(thisWeek.levyCents).toBe(Math.round(900 * 1.025));
-    expect(thisWeek.perMemberCents).toBe(Math.round(Math.round(900 * 1.025) / 3));
-
-    // The pending week's projected levy must not change anyone's balance.
-    const withPending = financed([...done, pending]);
-    const settledOnly = financed(done);
-    expect(withPending.nets).toEqual(settledOnly.nets);
-    expect(withPending.houseCents).toBe(settledOnly.houseCents);
-  });
-
-  it('amortizes the doer payout over following weeks (no same-week receipt)', () => {
-    const weeks = [week(1, '2026-06-07'), week(2, '2026-06-14'), week(3, '2026-06-21')];
-    const flow = computeFinancingCashflow(weeks, people, prefsByChore, 'vcg');
-    const per = Math.round(Math.round(900 * 1.025) / 3);
-
-    // Week 1: the doer is owed 900 but the pool is empty, so nobody moves cash.
-    const w1 = flow.get('2026-06-07')!;
-    expect(w1.byRoommate.get(2)).toBe(0);
-    expect(w1.byRoommate.get(1)).toBe(0);
-
-    // Week 2: the levy is collected and the house pays the week-1 IOU back out.
-    const w2 = flow.get('2026-06-14')!.byRoommate;
-    expect(w2.get(1)).toBe(-per); // non-doers just pay the levy
-    expect(w2.get(3)).toBe(-per);
-    expect(w2.get(2)).toBe(3 * per - per); // doer receives the whole pool, less own levy
-  });
-
-  it('credits this week’s allocated (pending) doer so the week is not all-negative', () => {
-    const past = [week(1, '2026-06-07'), week(2, '2026-06-14'), week(3, '2026-06-21')];
-    const current: RawInstance = { ...week(4, '2026-06-28'), status: 'pending' };
-    const flow = computeFinancingCashflow([...past, current], people, prefsByChore, 'vcg');
-
-    const cur = flow.get('2026-06-28')!;
-    expect(cur.settled).toBe(false); // projected: this week isn't done
-    // The allocated doer is owed and paid down from the pool, so they net positive...
-    expect(cur.byRoommate.get(2)!).toBeGreaterThan(0);
-    // ...while the others pay the cash levy. (Before the fix, everyone was negative.)
-    expect(cur.byRoommate.get(1)!).toBeLessThan(0);
-  });
-
-  it('does not credit a failed chore', () => {
-    const failed: RawInstance = { ...week(1, '2026-06-07'), status: 'failed' };
-    const flow = computeFinancingCashflow([failed], people, prefsByChore, 'vcg');
-    const w = flow.get('2026-06-07')!;
-    expect([...w.byRoommate.values()].every((v) => v === 0)).toBe(true);
-    expect(w.houseDeficitCents).toBe(0); // nothing owed, nothing assessed
-  });
-
-  it('accrues notional surplus uncapped while cash collection stays capped', () => {
-    const weeks = Array.from({ length: 55 }, (_, k) =>
-      week(k + 1, new Date(Date.UTC(2026, 0, 4 + 7 * k)).toISOString().slice(0, 10)),
-    );
-    const flow = computeFinancingCashflow(weeks, people, prefsByChore, 'vcg');
-    const last = flow.get(new Date(Date.UTC(2026, 0, 4 + 7 * 54)).toISOString().slice(0, 10))!;
-
-    // The notional balance has crossed into surplus (negative) and keeps growing,
-    // even though the cash levy is capped at what the house still owes.
-    expect(last.houseDeficitCents).toBeLessThan(0);
-    // Once the backlog clears the doer is paid same-week (positive)...
-    expect(last.byRoommate.get(2)!).toBeGreaterThan(0);
-    // ...and non-doers pay strictly less than the full marked-up assessment; the
-    // gap is the surplus that accrues notionally without changing hands.
-    const notionalPerHead = Math.round(Math.round(900 * 1.025) / 3);
-    expect(Math.abs(last.byRoommate.get(1)!)).toBeLessThan(notionalPerHead);
-  });
-
-  it('financing off leaves the textbook VCG deficit untouched', () => {
-    const b = computeBalances([week(1, '2026-06-07'), week(2, '2026-06-14')], people, prefsByChore, 'vcg');
-    expect(b.houseCents).toBe(1800);
-    expect(b.weeklyRateCents).toBe(0);
-  });
+  it.each(['first-best', 'vickrey-majority', 'vickrey-faltings'] as const)(
+    'nets to zero with a flat house and only counts done (%s)',
+    (mechanism) => {
+      const b = computeBalances([doneRecurring, pendingRecurring], people, prefsByChore, mechanism);
+      expect(b.houseCents).toBe(0);
+      expect(b.nets.reduce((s, n) => s + n.net_cents, 0)).toBe(0);
+    },
+  );
 });
 
 describe('membership windows', () => {
@@ -332,11 +260,11 @@ describe('membership windows', () => {
   });
 
   it('keeps non-members out of the chore transfer for that week', () => {
-    const prefsByChore = { 5: { 1: P(1500, 900), 2: P(1200, 700), 3: P(1800, 1100) } };
+    const prefsByChore = { 5: richPrefs };
     const earlyWeek: RawInstance = {
       id: 1, recurring_chore_id: 5, assignee_id: null, status: 'done', payout_cents: 0, week_start: '2026-05-31',
     };
-    const b = computeBalances([earlyWeek], roster, prefsByChore, 'agv');
+    const b = computeBalances([earlyWeek], roster, prefsByChore, 'first-best');
     // Nathan hadn't joined, so he carries no balance for that week.
     expect(b.nets.find((n) => n.id === 3)?.net_cents).toBe(0);
     expect(b.nets.reduce((s, n) => s + n.net_cents, 0)).toBe(0);
@@ -350,7 +278,7 @@ describe('recorded payments', () => {
   ];
 
   it('moves net from payer to recipient without touching the house', () => {
-    const b = computeBalances([], roster, {}, 'agv', {}, [
+    const b = computeBalances([], roster, {}, 'first-best', {}, [
       { from_roommate_id: 1, to_roommate_id: 2, amount_cents: 500 },
     ]);
     expect(b.nets.find((n) => n.id === 1)?.net_cents).toBe(-500);

@@ -24,6 +24,7 @@ import numpy as np
 
 from .domain import ChoreDomain, Outcome, Profile, Type, gross_utility, replace_type, welfare
 from .mechanism import Lottery, TabularMechanism
+from .profiling import checkpoint
 from .solver import pyomo, solve
 
 
@@ -64,6 +65,7 @@ def solve_integrated_lp(
     rounds add any misreport whose gain exceeds ``ic_tolerance``.
     """
 
+    mark = checkpoint()
     pyo = pyomo()
     all_profiles = tuple(domain.profiles())
     profiles = (
@@ -282,12 +284,14 @@ def solve_integrated_lp(
         expr=model.regret - welfare_weight * average_welfare_expr,
         sense=pyo.minimize,
     )
+    mark("integrated LP: model build")
     # Interior point without crossover only when regularization is skipped;
     # the regularization re-solve pins the objectives to their optima, which
     # leaves the feasible set without an interior and defeats pure IPM.
     persistent_solver = solve(
         model, solver_name, method="ipm" if lazy_ic else None
     )
+    mark("integrated LP: initial solve")
 
     if lazy_ic:
         for cutting_round in range(1, 26):
@@ -324,6 +328,7 @@ def solve_integrated_lp(
             solve(model, solver_name, solver=persistent_solver)
         else:
             raise RuntimeError("IC constraint generation did not converge")
+        mark("integrated LP: IC cutting rounds")
 
     if regularize:
         # IC/BB payment rules are often non-unique. Select a numerically tame
@@ -355,6 +360,7 @@ def solve_integrated_lp(
             sense=pyo.minimize,
         )
         solve(model, solver_name, solver=persistent_solver)
+        mark("integrated LP: regularization solve")
 
     reduced_table: dict[Profile, Lottery] = {}
     for p, profile in enumerate(profiles):
@@ -446,6 +452,7 @@ def solve_integrated_lp(
         / len(all_profiles)
         for i in range(domain.n)
     )
+    mark("integrated LP: mechanism extraction")
     return IntegratedLPSolution(
         mechanism=TabularMechanism("lp_integrated_supply_demand", domain, table),
         worst_case_regret=float(pyo.value(model.regret)),

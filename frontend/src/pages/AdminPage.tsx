@@ -3,15 +3,14 @@ import { Alert, Badge, Button, ButtonGroup, Form, Table, ToggleButton } from 're
 
 import { api, useAsync } from '../lib/api';
 
+// All three mechanisms are exactly budget-balanced (every chore's transfers sum
+// to zero — no house account), and all finance the doer by an equal per-head
+// split of a single price. They differ in how the price is set and who decides
+// whether the chore happens at all.
 const MECHANISMS = [
-  { value: 'agv', label: 'AGV', hint: 'Budget-balanced: every chore’s transfers sum to zero — no house account needed.' },
-  { value: 'vcg', label: 'VCG', hint: 'Vickrey–Clarke–Groves: the doer is paid the second-lowest bid; the house covers the resulting deficit.' },
-  { value: 'bailey-cavallo', label: 'Bailey–Cavallo', hint: 'Symmetric Cavallo: each roommate’s transfer is adjusted by 1/n of the VCG revenue the others would generate without them — a rebate when that’s a surplus, a charge when it’s a deficit. Strategyproof like VCG, and it shares the house deficit back among roommates (so it isn’t individually rational, and only approaches budget balance — the house keeps a smaller residual).' },
-];
-
-const FINANCINGS = [
-  { value: 'none', label: 'None', hint: 'The house absorbs any imbalance directly — $0 under AGV, a running deficit under VCG.' },
-  { value: 'ema', label: 'EMA', hint: 'Amortize the deficit instead of absorbing it: each settled week everyone pays a flat levy (a marked-up EMA of past deficits), which pays the doers down over the following weeks. The house never pays out of pocket and trends toward a small, burnable surplus.' },
+  { value: 'first-best', label: 'First-Best', hint: 'Equal split + first-best: the lowest bidder does the chore whenever total WTP covers their bid, is paid their own bid, and everyone (doer included) chips in an equal share of it. Maximizes reported surplus — the efficiency benchmark — but not strategyproof: the doer profits by inflating their bid, and inflated WTP sways the go/no-go decision.' },
+  { value: 'vickrey-majority', label: 'Vickrey + Majority', hint: 'Equal split + Vickrey + majority: the lowest bidder does the chore but is paid the second-lowest bid, so bidding your true cost is dominant on the supply side. The chore happens only if a strict majority’s WTP covers their equal share of that price — nobody can be dragged into funding something a majority doesn’t accept, but a cheap chore a minority loves can be voted down.' },
+  { value: 'vickrey-faltings', label: 'Vickrey + FaltingsFair', hint: 'Equal split + Vickrey + FaltingsFair: the doer is again paid the second-lowest bid. The go/no-go decision is delegated to a “jury” of everyone except one roommate (drawn per chore instance), with zero-sum fairness side-payments keeping the vote truthful. Since money only moves when a chore happens, those side-payments are scaled by n/k (k = juries that would fund) so their expectation is unchanged — audited to be exactly as incentive-compatible as paying them unconditionally. The cost: with 1/n probability the decision ignores your WTP.' },
 ];
 
 export default function AdminPage({ bump }: { bump: () => void }) {
@@ -19,19 +18,11 @@ export default function AdminPage({ bump }: { bump: () => void }) {
   const settings = useAsync(() => api('/api/settings'), []);
   const [name, setName] = useState('');
 
-  const mechanism = settings.data?.mechanism ?? 'agv';
-  const financing = settings.data?.financing ?? 'none';
+  const mechanism = settings.data?.mechanism ?? 'first-best';
 
   async function selectMechanism(value: string) {
     if (value === mechanism) return;
     const next = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ mechanism: value }) });
-    settings.setData(next);
-    bump();
-  }
-
-  async function selectFinancing(value: string) {
-    if (value === financing) return;
-    const next = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ financing: value }) });
     settings.setData(next);
     bump();
   }
@@ -101,29 +92,6 @@ export default function AdminPage({ bump }: { bump: () => void }) {
           </ButtonGroup>
         </div>
         <p className="mechanism-hint">{MECHANISMS.find((m) => m.value === mechanism)?.hint}</p>
-      </div>
-
-      <div className="mechanism-setting">
-        <div className="mechanism-heading">
-          <span className="mechanism-title">Financing</span>
-          <ButtonGroup>
-            {FINANCINGS.map((option) => (
-              <ToggleButton
-                key={option.value}
-                id={`financing-${option.value}`}
-                type="radio"
-                variant="outline-primary"
-                name="financing"
-                value={option.value}
-                checked={financing === option.value}
-                onChange={() => selectFinancing(option.value)}
-              >
-                {option.label}
-              </ToggleButton>
-            ))}
-          </ButtonGroup>
-        </div>
-        <p className="mechanism-hint">{FINANCINGS.find((f) => f.value === financing)?.hint}</p>
       </div>
 
       <Form onSubmit={addRoommate} className="toolbar">

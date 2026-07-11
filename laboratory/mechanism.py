@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Protocol
 
-from .domain import ChoreDomain, Outcome, Profile, gross_utility, welfare
+from .domain import ChoreDomain, Outcome, Profile, gross_utility, quantize_profile, welfare
 
 
 @dataclass(frozen=True)
@@ -64,6 +64,26 @@ class TabularMechanism:
             return self.table[reports]
         except KeyError as exc:
             raise ValueError("report profile is outside this mechanism's finite domain") from exc
+
+
+class QuantizedReports:
+    """Quantize raw reports at the door of a finite-domain mechanism.
+
+    The deployment interface of tabular mechanisms: participants report
+    continuous types, the mechanism sees the nearest grid levels. Wrapping
+    lets one mechanism list serve raw-type and grid mechanisms alike.
+    """
+
+    def __init__(self, mechanism, value_levels, cost_levels) -> None:
+        self.name = mechanism.name
+        self.mechanism = mechanism
+        self.value_levels = tuple(map(float, value_levels))
+        self.cost_levels = tuple(map(float, cost_levels))
+
+    def run(self, reports: Profile) -> Lottery:
+        return self.mechanism.run(
+            quantize_profile(reports, self.value_levels, self.cost_levels)
+        )
 
 
 def deterministic_lottery(outcome: Outcome, transfers: tuple[float, ...]) -> Lottery:

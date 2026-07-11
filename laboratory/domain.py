@@ -91,3 +91,22 @@ def efficient_outcome(profile: Profile, eligible: Iterable[int] | None = None) -
 
 def replace_type(profile: Profile, agent: int, report: Type) -> Profile:
     return profile[:agent] + (report,) + profile[agent + 1 :]
+
+
+def nearest_level(value: float, levels: Iterable[float]) -> float:
+    """Nearest grid level, ties broken toward the lower level."""
+
+    return min(levels, key=lambda level: (abs(level - value), level))
+
+
+def quantize_profile(
+    profile: Profile,
+    value_levels: Iterable[float],
+    cost_levels: Iterable[float],
+) -> Profile:
+    values = tuple(map(float, value_levels))
+    costs = tuple(map(float, cost_levels))
+    return tuple(
+        Type(nearest_level(t.value, values), nearest_level(t.cost, costs))
+        for t in profile
+    )

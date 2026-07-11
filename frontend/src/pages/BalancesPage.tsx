@@ -11,8 +11,7 @@ export default function BalancesPage({ refreshToken }: { refreshToken: number })
 
   if (error) return <Alert variant="danger">{error}</Alert>;
 
-  const mechanism = data?.mechanism ?? 'agv';
-  const financing = data?.financing ?? 'none';
+  const mechanism = data?.mechanism ?? 'first-best';
   const allRoommates = data?.roommates ?? [];
   const currentMembers = allRoommates.filter((r: any) => r.active);
   const people: Person[] = allRoommates.map((r: any) => ({
@@ -34,19 +33,18 @@ export default function BalancesPage({ refreshToken }: { refreshToken: number })
 
   // Balances are solved entirely on the client from the raw instances, prefs, and
   // recorded settle-up payments.
-  const { nets, settlements, houseCents, weeklyRateCents } = computeBalances(
+  const { nets, settlements, houseCents } = computeBalances(
     instances,
     people,
     data?.preferences_by_chore ?? {},
     mechanism,
     data?.preferences_by_instance ?? {},
     recordedPayments,
-    financing,
   );
 
-  // Positive house net = the house pays out (deficit); negative = surplus.
+  // Every mechanism is exactly budget-balanced, so this is always $0.00; it is
+  // displayed as a conservation check.
   const houseLabel = houseCents > 0 ? 'deficit' : houseCents < 0 ? 'surplus' : 'balanced';
-  const isFinanced = financing === 'ema';
 
   async function recordPayment(event: React.FormEvent) {
     event.preventDefault();
@@ -88,22 +86,11 @@ export default function BalancesPage({ refreshToken }: { refreshToken: number })
               <span className={`house-account-amount ${paymentClass(houseCents)}`}>{cents(houseCents)}</span>
               <span className="house-account-label">{houseLabel}</span>
             </div>
-            {isFinanced ? (
-              <p className="house-account-note">
-                <strong>{mechanism.toUpperCase()}</strong> with <strong>EMA financing</strong>. The house never
-                pays out of pocket: each settled week everyone owes a flat levy of{' '}
-                <strong>{cents(weeklyRateCents)}</strong> (a marked-up EMA of past deficits), which pays the
-                doers down over the following weeks. This residual is just the financing float — it trends
-                toward a small, burnable surplus rather than a deficit. Net balances already fold in recorded
-                settle-up payments.
-              </p>
-            ) : (
-              <p className="house-account-note">
-                Mechanism: <strong>{mechanism.toUpperCase()}</strong>. The house absorbs any imbalance that the
-                roommate transfers don’t cover — always $0.00 under AGV, and the running deficit/surplus under VCG.
-                Net balances already fold in recorded settle-up payments.
-              </p>
-            )}
+            <p className="house-account-note">
+              Mechanism: <strong>{mechanism}</strong>. Every mechanism is exactly budget-balanced — each
+              chore’s transfers sum to zero — so the house account is always $0.00 (anything else indicates a
+              bug). Net balances already fold in recorded settle-up payments.
+            </p>
           </div>
 
           <Row className="g-4">

@@ -72,17 +72,26 @@ outcome-contingent demand transfers. It enforces:
 
 There is no posted-price, quota, sponsor, nonnegative-contribution, or universal
 truthfulness restriction. FaltingsFair is feasible inside this demand LP's
-constraint set. `demand_lp_solutions.csv` separately certifies demand-stage WTP
-IC and price recovery for every Vickrey price.
+constraint set. `demand_lp_solutions.csv` records the per-price LP diagnostics
+(and, with `--audit`, certifies demand-stage WTP IC and price recovery).
 
-The experiment solves this mechanism at two WTP resolutions over the same
-reverse-Vickrey supply grid:
+The experiment runs the *raw-bid* deployment variant of this composition:
+performer selection and the Vickrey price use unquantized cost bids, so no
+supply-side welfare is lost to a report grid. WTP reports are quantized
+internally and the demand lottery is precomputed on a `--demand-price-step`
+price grid (default 2.5); the exact-vs-rounded price gap is charged equally in
+the funded branch, keeping budget balance and supply DSIC exact while demand
+incentives stay within `step/(2n)` of exact. Two WTP resolutions are compared:
 
 - coarse demand: `0, 15, 30, 45`;
 - fine demand: `0, 7.5, 15, 22.5, 30, 37.5, 45`.
 
-This keeps the supply comparison fixed while showing how much demand-side
-performance is lost to WTP discretization.
+This keeps the supply side fixed while showing how much demand-side
+performance is lost to WTP discretization. The per-price demand LPs are
+independent and solve in parallel across worker processes (spawned, not
+forked — forked children inherit the parent's multithreaded HiGHS state
+broken). A fully grid-bid variant (`UnrestrictedDemandSequential`) remains
+available in `sequential.py`; on grid profiles the two coincide.
 
 When composed with supply, the Vickrey payment `p` is added to the performer's
 transfer. That funding-contingent rent is deliberately excluded from the fixed
@@ -165,6 +174,26 @@ the 500 household-calibrated scenarios. `synthetic_rounding_loss.png` isolates
 the allocation loss from the coarse grid and the fine-WTP grid; the underlying
 profile and summary data are written to matching CSV files.
 
+`uniform_prior_regret_cdf.png` is the prior-free complement: true types drawn
+uniformly with each coordinate capped at the top rounding boundary (top grid
+level plus half a step, so top-coding of an unbounded tail cannot dominate)
+and scored against the continuous first best. Unlike the exhaustive CDF —
+which audits mechanisms on their own report domain and so contains no rounding
+loss by construction — every curve here includes each mechanism's quantization
+exposure under its deployment report interface. The same mechanism list runs
+in every comparison: raw-bid and formula mechanisms consume the continuous
+types directly, tabular mechanisms quantize at the door via the
+`QuantizedReports` wrapper, and the raw equal-split first best anchors zero
+regret. Profile and summary data are in `uniform_prior_regret.csv` and
+`uniform_prior_regret_summary.csv`.
+
+The exhaustive IC/BB/IR and demand-LP audits are diagnostic and skipped by
+default; pass `--audit` to run them and emit `mechanism_audits.csv` plus the
+audit columns of `demand_lp_solutions.csv`. Each run also writes `timings.csv`
+and prints a chronological phase-timing report (LP model build vs solve vs IC
+cutting rounds, per-mechanism audits, evaluation and plotting) to direct
+optimization effort.
+
 ## Run
 
 ```bash
@@ -201,7 +230,7 @@ where pure IPM fails. Override globally with `CHOREMARKET_LP_METHOD`
 ## Checked-in results
 
 Result directories contain profile-level welfare CSVs, exhaustive mechanism
-audits, synthetic bid/WTP data, LP diagnostics, and five figures. The current
+audits, synthetic bid/WTP data, LP diagnostics, and six figures. The current
 broader-grid `n=3` exhaustive results are:
 
 | Mechanism | welfare ratio | worst regret |

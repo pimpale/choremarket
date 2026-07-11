@@ -47,15 +47,21 @@ def test_current_and_upcoming_week():
 # Settings (active mechanism). The economics live on the client; the backend
 # only stores which mechanism is selected.
 # --------------------------------------------------------------------------- #
-def test_mechanism_defaults_to_agv_and_round_trips(fresh_db):
-    assert repo.get_mechanism() == "agv"
-    assert repo.set_mechanism("vcg") == "vcg"
-    assert repo.get_mechanism() == "vcg"
+def test_mechanism_defaults_to_first_best_and_round_trips(fresh_db):
+    assert repo.get_mechanism() == "first-best"
+    assert repo.set_mechanism("vickrey-majority") == "vickrey-majority"
+    assert repo.get_mechanism() == "vickrey-majority"
 
 
 def test_set_mechanism_rejects_unknown(fresh_db):
     with pytest.raises(ValueError):
         repo.set_mechanism("bogus")
+
+
+def test_retired_mechanism_values_fall_back_to_default(fresh_db):
+    # Databases from before the exact-BB switch may still store agv/vcg.
+    repo.set_setting("mechanism", "agv")
+    assert repo.get_mechanism() == "first-best"
 
 
 def test_initial_roommates_match_mock_roommates(fresh_db):

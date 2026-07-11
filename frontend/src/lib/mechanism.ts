@@ -4,19 +4,26 @@
 // transfers, whether it's worth doing, balances and settlements -- is recomputed
 // here from those primitives. There are at most a few hundred chore instances in
 // a year, so doing this live on every render is trivial.
+//
+// Every mechanism here is exactly budget-balanced: each chore's transfers sum
+// to zero, so no house account is ever needed. The performer is always financed
+// by an equal per-head split of a single price:
+//   - 'first-best': the price is the doer's own bid, paid whenever total WTP
+//     covers it. The efficiency benchmark -- not strategyproof.
+//   - 'vickrey-majority': the price is the second-lowest bid (a Vickrey
+//     procurement, so bidding your true cost is dominant); the chore happens
+//     only if a strict majority think it worth their share of that price.
+//   - 'vickrey-faltings': the same Vickrey price, but the funding decision is
+//     delegated to a randomly drawn "jury" of everyone-but-one, and the drawn
+//     roommate's exclusion is compensated by FaltingsFair side-payments that
+//     sum to zero. The draw is realized deterministically from the instance id.
+//     Because money only moves when a chore actually happens, the fairness
+//     side-payments are scaled by n/k (k = number of funding juries) so their
+//     expectation over draws matches the always-paid mechanism — an exhaustive
+//     grid audit shows this settlement is exactly as incentive-compatible as
+//     paying them unconditionally, while dropping them unscaled is not.
 
-export type Mechanism = 'agv' | 'vcg' | 'bailey-cavallo';
-
-// Financing is orthogonal to the mechanism. 'none' lets the house absorb any VCG
-// deficit (the textbook behaviour); 'ema' amortizes that deficit with a flat
-// weekly levy so the house never pays out of pocket (see computeFinancing).
-export type Financing = 'none' | 'ema';
-
-// The levy each settled week is the EMA of past weekly deficits, marked up
-// slightly so we err toward a small (burnable) surplus rather than a deficit that
-// would strand unpaid doers at the end of a lease.
-const FINANCING_EMA_ALPHA = 0.5;
-const FINANCING_MARKUP = 1.025;
+export type Mechanism = 'first-best' | 'vickrey-majority' | 'vickrey-faltings';
 
 export interface Pref {
   wtp_cents: number;
@@ -49,12 +56,38 @@ export function membersForWeek(people: Person[], weekStart?: string): Person[] {
   );
 }
 
+// The per-mechanism numbers the ledger's Mechanism columns display.
+export interface MechanismDetail {
+  // What the doer is paid: their own bid under 'first-best', the Vickrey
+  // (second-lowest) bid otherwise.
+  priceCents: number;
+  // Whose bid set the price (null under 'first-best', where it's the doer's own).
+  priceSetterId: number | null;
+  // The equal per-head share financing that price (display-rounded).
+  shareCents: number;
+  // 'vickrey-majority': how many members' WTP covers the share, and the
+  // strict-majority threshold that decides funding.
+  supporters?: number;
+  required?: number;
+  // 'vickrey-faltings': the roommate excluded by the realized draw, whether the
+  // remaining jury funded the chore, how many of the n juries fund, and each
+  // member's zero-sum fairness side-payment as it settles here — already
+  // scaled by n / fundingJuries (positive receives).
+  excludedId?: number;
+  juryFunds?: boolean;
+  fundingJuries?: number;
+  fairAdjustmentCents?: Record<number, number>;
+}
+
 export interface Ledger {
   assigneeId: number | null;
   surplusCents: number;
   worthDoing: boolean;
+  // Mechanism-specific explanation when the chore is skipped.
+  skipReason?: string;
   // roommate_id -> cents; positive pays, negative receives.
   payments: Record<number, number>;
+  detail?: MechanismDetail;
 }
 
 // Rounds rational transfers to whole cents while preserving an exact sum: round
@@ -86,89 +119,94 @@ function pickAssignee(people: Person[], prefs: Record<number, Pref>, forcedId: n
   })[0];
 }
 
-// AGV (d'AGVA expected-externality) transfer. Budget-balanced: payments sum to 0.
-// v_i = wtp_i (minus bid_i for the doer); net receipt t_i = (sum_v - n*v_i)/(n-1);
-// payment_i = -t_i (positive pays, negative receives).
-function agvPayments(people: Person[], prefs: Record<number, Pref>, assigneeId: number): Record<number, number> {
-  const value = (p: Person) => (prefs[p.id]?.wtp_cents ?? 0) - (p.id === assigneeId ? prefs[p.id]?.bid_cents ?? 0 : 0);
-  const n = people.length;
-  const totalValue = people.reduce((s, p) => s + value(p), 0);
+// The Vickrey procurement price for a given performer: the lowest bid among
+// everyone else (the second-lowest bid when the performer is the natural
+// lowest bidder).
+function vickreyPrice(people: Person[], prefs: Record<number, Pref>, assigneeId: number): number {
+  const others = people.filter((p) => p.id !== assigneeId);
+  return Math.min(...others.map((p) => prefs[p.id]?.bid_cents ?? 0));
+}
+
+function priceSetter(people: Person[], prefs: Record<number, Pref>, assigneeId: number, price: number): number | null {
+  const setter = people
+    .filter((p) => p.id !== assigneeId && (prefs[p.id]?.bid_cents ?? 0) === price)
+    .sort((a, b) => a.id - b.id)[0];
+  return setter?.id ?? null;
+}
+
+// Everyone (doer included) pays an equal share of the price; the doer receives
+// the price. Sums to zero before rounding; balancedRound keeps it exact.
+function equalSplitPayments(people: Person[], assigneeId: number, price: number): Record<number, number> {
+  const share = price / people.length;
   const raw: Record<number, number> = {};
-  for (const p of people) raw[p.id] = (n * value(p) - totalValue) / (n - 1);
+  for (const p of people) raw[p.id] = share - (p.id === assigneeId ? price : 0);
   return balancedRound(raw);
 }
 
-// VCG (Clarke pivot). NOT budget-balanced -- the house absorbs the difference.
-function vcgPayments(
+// FaltingsFair side-payments and the realized jury draw. Each member's
+// fairness transfer is their expected VCG pivot charge across the draws that
+// include them, minus 1/n of the charges levied when they are the excluded
+// one -- the rebate depends only on the *others'* reports and the charges are
+// standard pivot terms, so truthful reporting stays optimal in expectation.
+// The transfers sum to zero, so exact budget balance survives any realized
+// draw. `fairTransfers` comes back scaled by n/k (k = funding juries): the app
+// only settles funded chores, and scaling keeps each member's expected
+// fairness payment over the draws equal to the unconditional mechanism's.
+function faltingsDraw(
   people: Person[],
   prefs: Record<number, Pref>,
-  assigneeId: number,
-  winningBid: number,
-): Record<number, number> {
-  const totalWtp = people.reduce((s, p) => s + (prefs[p.id]?.wtp_cents ?? 0), 0);
-  const others = people.filter((p) => p.id !== assigneeId);
-  const secondLowestBid = Math.min(...others.map((p) => prefs[p.id]?.bid_cents ?? 0));
-
-  const payments: Record<number, number> = {};
-  // Doer is paid the second-lowest bid (capped at the value they uniquely unlock).
-  const withoutDoerWtp = totalWtp - (prefs[assigneeId]?.wtp_cents ?? 0);
-  payments[assigneeId] = Math.max(0, withoutDoerWtp - secondLowestBid) - withoutDoerWtp;
-  // Non-doers pay only the Clarke tax when pivotal to doing the chore at all.
-  for (const p of others) {
-    const withoutI = totalWtp - (prefs[p.id]?.wtp_cents ?? 0);
-    payments[p.id] = Math.max(0, withoutI - winningBid) - (withoutI - winningBid);
-  }
-  return payments;
-}
-
-// Total VCG payment collected by the house for a set of people under the natural
-// (lowest-bidder) allocation: positive = net collected from roommates, negative =
-// net paid out. 0 when there's nobody to do the chore or it isn't worth doing.
-// This is the "VCG revenue" the Cavallo rebate redistributes.
-function vcgRevenue(people: Person[], prefs: Record<number, Pref>): number {
-  if (people.length < 2) return 0;
-  const assignee = pickAssignee(people, prefs, null);
-  const winningBid = prefs[assignee.id]?.bid_cents ?? 0;
-  const totalWtp = people.reduce((s, p) => s + (prefs[p.id]?.wtp_cents ?? 0), 0);
-  if (totalWtp - winningBid < 0) return 0; // not worth doing -> no transfers
-  const payments = vcgPayments(people, prefs, assignee.id, winningBid);
-  return Object.values(payments).reduce((s, a) => s + a, 0);
-}
-
-// Bailey-Cavallo, symmetric (deficit-sharing) variant. Each roommate's VCG payment
-// is adjusted by h_i = R_{-i}/n, where R_{-i} is the VCG revenue the *other*
-// roommates would generate without them. When R_{-i} > 0 that's the textbook
-// Cavallo rebate (hand a surplus back); when R_{-i} < 0 it's the mirror image -- a
-// charge that shares the deficit the rest of the house would run. Either way h_i
-// depends only on the *other* roommates' reports, so -- exactly like the rebate --
-// it stays a Groves mechanism and remains strategyproof. The sign is irrelevant to
-// incentives. In this single-chore setting VCG runs a deficit, so this is mostly
-// the charge side: it pulls the house deficit back toward zero by levying roommates.
-//
-// Two textbook Cavallo guarantees do NOT survive the deficit direction, by design:
-//   - It is no longer individually rational: a roommate can be charged more than the
-//     chore is worth to them (the rebate side only ever pays roommates).
-//   - It does not reach exact budget balance. Cavallo's feasibility theorem
-//     (rebates <= surplus) is one-directional, so the charges need not sum to the
-//     deficit -- the house is left with a smaller residual deficit OR a small surplus.
-// Crucially we must NOT cap/renormalise to force exact balance: the cap would depend
-// on the full-economy revenue (which includes a roommate's own report), so a binding
-// cap reintroduces own-report dependence and breaks strategyproofness. We take the
-// signed h_i straight and let the house carry whatever residual is left.
-function baileyCavalloPayments(
-  people: Person[],
-  prefs: Record<number, Pref>,
-  assigneeId: number,
-  winningBid: number,
-): Record<number, number> {
-  const base = vcgPayments(people, prefs, assigneeId, winningBid);
+  price: number,
+  drawKey: number,
+): {
+  excludedId: number;
+  juryFunds: boolean;
+  fundingJuries: number;
+  fairTransfers: Record<number, number>;
+} {
   const n = people.length;
-  const out: Record<number, number> = {};
-  for (const p of people) {
-    const others = people.filter((q) => q.id !== p.id);
-    out[p.id] = Math.round(base[p.id] - vcgRevenue(others, prefs) / n);
+  const share = price / n;
+  const ids = people.map((p) => p.id).sort((a, b) => a - b);
+  const netValue: Record<number, number> = {};
+  for (const p of people) netValue[p.id] = (prefs[p.id]?.wtp_cents ?? 0) - share;
+
+  // Pivot charges in the reduced economy without `excluded`: agent i is charged
+  // the welfare the rest would gain by overruling the jury's funding choice.
+  const chargesWithout = (excluded: number): Record<number, number> => {
+    const agents = ids.filter((id) => id !== excluded);
+    const funds = agents.reduce((s, id) => s + netValue[id], 0) >= -1e-9;
+    const charges: Record<number, number> = {};
+    for (const i of agents) {
+      const othersSum = agents.filter((j) => j !== i).reduce((s, j) => s + netValue[j], 0);
+      charges[i] = Math.max(0, othersSum) - (funds ? othersSum : 0);
+    }
+    return charges;
+  };
+
+  const reducedCharges = new Map<number, Record<number, number>>(
+    ids.map((excluded) => [excluded, chargesWithout(excluded)]),
+  );
+  const fairTransfers: Record<number, number> = {};
+  for (const i of ids) {
+    let expectedOwnCharge = 0;
+    for (const excluded of ids) {
+      if (excluded !== i) expectedOwnCharge += reducedCharges.get(excluded)![i] ?? 0;
+    }
+    expectedOwnCharge /= n;
+    const rebate = Object.values(reducedCharges.get(i)!).reduce((s, c) => s + c, 0) / n;
+    fairTransfers[i] = rebate - expectedOwnCharge; // positive receives
   }
-  return out;
+
+  const fundingJuries = ids.filter((excluded) =>
+    ids.filter((id) => id !== excluded).reduce((s, id) => s + netValue[id], 0) >= -1e-9,
+  ).length;
+  if (fundingJuries) {
+    for (const i of ids) fairTransfers[i] *= n / fundingJuries;
+  }
+
+  const excludedId = ids[((drawKey % n) + n) % n];
+  const jury = ids.filter((id) => id !== excludedId);
+  const juryFunds = jury.reduce((s, id) => s + netValue[id], 0) >= -1e-9;
+  return { excludedId, juryFunds, fundingJuries, fairTransfers };
 }
 
 // Balanced transfer for a directly-entered one-off: the assignee receives the
@@ -189,15 +227,19 @@ export function flatPayout(assigneeId: number | null, roommateIds: number[], pay
   return payments;
 }
 
-// Assign a chore and compute its transfer under the active mechanism. Mirrors
-// the efficiency rule: do it only when total WTP covers the lowest bid; the
-// assignee is the lowest bidder (or a forced override, which forces it done).
+// Assign a chore and compute its transfer under the active mechanism. The
+// assignee is the lowest bidder (or a forced override, which forces it done);
+// whether the chore happens at all is mechanism-specific: total WTP must cover
+// the bid ('first-best'), a strict majority must accept the per-head share
+// ('vickrey-majority'), or the drawn jury must value funding nonnegatively
+// ('vickrey-faltings'). `drawKey` seeds the faltings draw (the instance id).
 export function computeLedger(
   people: Person[],
   prefs: Record<number, Pref>,
   mechanism: Mechanism,
   forcedAssigneeId: number | null = null,
   forceWorthDoing = true,
+  drawKey = 0,
 ): Ledger {
   if (!people.length) {
     return { assigneeId: null, surplusCents: 0, worthDoing: true, payments: {} };
@@ -206,22 +248,61 @@ export function computeLedger(
     return { assigneeId: people[0].id, surplusCents: 0, worthDoing: true, payments: { [people[0].id]: 0 } };
   }
 
+  const n = people.length;
   const assignee = pickAssignee(people, prefs, forcedAssigneeId);
   const totalWtp = people.reduce((s, p) => s + (prefs[p.id]?.wtp_cents ?? 0), 0);
   const winningBid = prefs[assignee.id]?.bid_cents ?? 0;
   const surplus = totalWtp - winningBid;
+  const forced = forcedAssigneeId != null && forceWorthDoing;
 
-  if (surplus < 0 && (forcedAssigneeId == null || !forceWorthDoing)) {
-    return { assigneeId: null, surplusCents: surplus, worthDoing: false, payments: {} };
+  const price = mechanism === 'first-best' ? winningBid : vickreyPrice(people, prefs, assignee.id);
+  const share = price / n;
+  const detail: MechanismDetail = {
+    priceCents: price,
+    priceSetterId: mechanism === 'first-best' ? null : priceSetter(people, prefs, assignee.id, price),
+    shareCents: Math.round(share),
+  };
+
+  let funds: boolean;
+  let skipReason: string | undefined;
+  let fairTransfers: Record<number, number> | undefined;
+
+  if (mechanism === 'vickrey-majority') {
+    detail.supporters = people.filter((p) => (prefs[p.id]?.wtp_cents ?? 0) + 1e-9 >= share).length;
+    detail.required = Math.ceil((n + 1) / 2);
+    funds = detail.supporters >= detail.required;
+    if (!funds) {
+      skipReason = `only ${detail.supporters} of ${n} accept the per-head share (need ${detail.required})`;
+    }
+  } else if (mechanism === 'vickrey-faltings') {
+    const draw = faltingsDraw(people, prefs, price, drawKey);
+    detail.excludedId = draw.excludedId;
+    detail.juryFunds = draw.juryFunds;
+    detail.fundingJuries = draw.fundingJuries;
+    detail.fairAdjustmentCents = draw.fairTransfers;
+    fairTransfers = draw.fairTransfers;
+    funds = draw.juryFunds;
+    if (!funds) skipReason = 'the drawn jury values the chore below its price';
+  } else {
+    funds = surplus >= 0;
+    if (!funds) skipReason = 'total WTP is below the lowest bid';
   }
 
-  const payments =
-    mechanism === 'vcg'
-      ? vcgPayments(people, prefs, assignee.id, winningBid)
-      : mechanism === 'bailey-cavallo'
-        ? baileyCavalloPayments(people, prefs, assignee.id, winningBid)
-        : agvPayments(people, prefs, assignee.id);
-  return { assigneeId: assignee.id, surplusCents: surplus, worthDoing: true, payments };
+  if (!funds && !forced) {
+    return { assigneeId: null, surplusCents: surplus, worthDoing: false, skipReason, payments: {}, detail };
+  }
+
+  let payments: Record<number, number>;
+  if (fairTransfers) {
+    const raw: Record<number, number> = {};
+    for (const p of people) {
+      raw[p.id] = share - (p.id === assignee.id ? price : 0) - (fairTransfers[p.id] ?? 0);
+    }
+    payments = balancedRound(raw);
+  } else {
+    payments = equalSplitPayments(people, assignee.id, price);
+  }
+  return { assigneeId: assignee.id, surplusCents: surplus, worthDoing: true, payments, detail };
 }
 
 // ---- Per-instance ledger + display status ------------------------------------
@@ -272,10 +353,10 @@ export function ledgerForInstance(
         },
       ]),
     );
-    ledger = computeLedger(members, prefs, mechanism, instance.assignee_id, false);
+    ledger = computeLedger(members, prefs, mechanism, instance.assignee_id, false, instance.id);
   } else {
     const prefs = prefsByChore[instance.recurring_chore_id] ?? {};
-    ledger = computeLedger(members, prefs, mechanism, instance.assignee_id);
+    ledger = computeLedger(members, prefs, mechanism, instance.assignee_id, true, instance.id);
   }
 
   // 'skipped' is derived, never stored; a manual done/failed always wins.
@@ -311,185 +392,14 @@ export interface RecordedPayment {
 export interface Balances {
   nets: Net[];
   settlements: Settlement[];
+  // Always 0 under the exact-BB mechanisms; kept as a conservation check.
   houseCents: number;
-  // 'ema' financing only: the levy each member owes for the next settled week (the
-  // marked-up EMA of past weekly deficits). 0 when financing is off.
-  weeklyRateCents: number;
-}
-
-// What 'ema' financing does to one week.
-export interface WeekFinancing {
-  deficitCents: number; // this week's aggregate house deficit (across all chores)
-  emaRateCents: number; // smoothed deficit from prior weeks -> this week's basis
-  levyCents: number; // marked-up amount the household funds this week (0 the first week)
-  perMemberCents: number; // levy split equally across this week's members
-  memberCount: number;
-  // True once the week has any settled (done) chore. The levy only depends on
-  // *prior* weeks, so an unsettled week (this week, next week) still has a known,
-  // projected levy -- but only settled weeks feed the EMA and count in balances.
-  settled: boolean;
-}
-
-export interface FinancingResult {
-  // Keyed by week_start; includes unsettled weeks (with a projected levy).
-  schedule: Map<string, WeekFinancing>;
-  // The marked-up trailing EMA: what the next settled week would levy.
-  nextRateCents: number;
-}
-
-// Walk every week oldest-first. Each week levies the marked-up EMA of *prior*
-// settled weeks' deficits (so the first settled week levies nothing); only a
-// settled week then folds its own deficit into the EMA. The levy is just
-// roommate->pot flow, so in computeBalances it slots into the existing
-// nets/settle() machinery: levy-payers become debtors that settle() pairs against
-// the doer-creditors, paying them out over subsequent weeks. The EMA tracks the
-// raw deficit; the markup biases toward a small surplus.
-export function computeFinancing(
-  instances: RawInstance[],
-  people: Person[],
-  prefsByChore: Record<number, Record<number, Pref>>,
-  mechanism: Mechanism,
-  prefsByInstance: Record<number, Record<number, NullablePref>> = {},
-): FinancingResult {
-  // Every week that has chores, plus the realized deficit from its settled ones.
-  const weeks = new Set<string>();
-  const deficitByWeek = new Map<string, number>();
-  for (const instance of instances) {
-    const week = instance.week_start ?? '';
-    weeks.add(week);
-    if (instance.status !== 'done') continue;
-    const { payments } = ledgerForInstance(instance, people, prefsByChore, mechanism, prefsByInstance);
-    const roommateFlow = Object.values(payments).reduce((s, a) => s + a, 0);
-    deficitByWeek.set(week, (deficitByWeek.get(week) ?? 0) - roommateFlow);
-  }
-
-  const schedule = new Map<string, WeekFinancing>();
-  let ema: number | null = null;
-  for (const week of [...weeks].sort()) {
-    const settled = deficitByWeek.has(week);
-    const levy = ema == null ? 0 : Math.max(0, Math.round(ema * FINANCING_MARKUP));
-    const members = membersForWeek(people, week);
-    schedule.set(week, {
-      deficitCents: deficitByWeek.get(week) ?? 0,
-      emaRateCents: ema == null ? 0 : Math.round(ema),
-      levyCents: levy,
-      perMemberCents: members.length ? Math.round(levy / members.length) : 0,
-      memberCount: members.length,
-      settled,
-    });
-    if (settled) {
-      const deficit = deficitByWeek.get(week) ?? 0;
-      ema = ema == null ? deficit : (1 - FINANCING_EMA_ALPHA) * ema + FINANCING_EMA_ALPHA * deficit;
-    }
-  }
-  const nextRateCents = ema == null ? 0 : Math.max(0, Math.round(ema * FINANCING_MARKUP));
-  return { schedule, nextRateCents };
-}
-
-// Actual net cash that moves for each roommate in a week.
-export interface WeekCashflow {
-  byRoommate: Map<number, number>; // roommate id -> net cash (+ received, - paid)
-  // The house's *notional* running balance after the week: cumulative entitlements
-  // owed minus the full marked-up levy assessed. Positive = still owed (deficit);
-  // negative = surplus. Uncapped -- the markup keeps accruing surplus even when no
-  // cash changes hands, so this is a buffer on the books to be burned later.
-  houseDeficitCents: number;
-  settled: boolean; // false = projected (this week's chores aren't done yet)
-}
-
-// Simulate the financed cash flow week by week.
-//
-// Entitlements are *allocation*-based: a chore credits its doer the moment it is
-// allocated (worth doing + assigned), so this/next week's pending chores count;
-// only a chore marked failed (or not worth doing) is dropped. The doer is credited
-// when allocated but only *paid* as the house pays its IOUs down (oldest first).
-//
-// Two ledgers run in parallel:
-//   - Cash (what actually moves): the house collects only what it needs to pay its
-//     outstanding IOUs -- never more -- so it never over-collects into a pile. Each
-//     roommate's net = the cash levy they pay minus any payout they receive.
-//   - Notional (the books): the full marked-up levy is assessed every week even
-//     when no cash is collected, so surplus accrues as a buffer (houseDeficitCents).
-export function computeFinancingCashflow(
-  instances: RawInstance[],
-  people: Person[],
-  prefsByChore: Record<number, Record<number, Pref>>,
-  mechanism: Mechanism,
-  prefsByInstance: Record<number, Record<number, NullablePref>> = {},
-): Map<string, WeekCashflow> {
-  const { schedule } = computeFinancing(instances, people, prefsByChore, mechanism, prefsByInstance);
-
-  // Allocation-based receipts per (week, roommate): positive = a doer owed money,
-  // negative = a pivotal Clarke payer who owes the house now. Failed / not-worth-
-  // doing chores are skipped (no allocation, so no entitlement).
-  const receiptsByWeek = new Map<string, Map<number, number>>();
-  for (const instance of instances) {
-    const ledger = ledgerForInstance(instance, people, prefsByChore, mechanism, prefsByInstance);
-    if (ledger.displayStatus === 'failed' || ledger.displayStatus === 'skipped') continue;
-    const week = instance.week_start ?? '';
-    const into = receiptsByWeek.get(week) ?? new Map<number, number>();
-    for (const [id, amount] of Object.entries(ledger.payments)) {
-      const rid = Number(id);
-      into.set(rid, (into.get(rid) ?? 0) - amount); // -payment = receipt
-    }
-    receiptsByWeek.set(week, into);
-  }
-
-  const queue: { id: number; amount: number }[] = []; // outstanding cash IOUs, oldest first
-  let cash = 0; // house cash reserve carried between weeks
-  let notional = 0; // notional house balance (+ owe / deficit, - surplus); uncapped
-  const out = new Map<string, WeekCashflow>();
-
-  for (const week of [...schedule.keys()].sort()) {
-    const wk = schedule.get(week)!;
-    const members = membersForWeek(people, week);
-    const net = new Map<number, number>(members.map((m) => [m.id, 0]));
-    const credit = (id: number, delta: number) => net.set(id, (net.get(id) ?? 0) + delta);
-
-    // 1. Book this week's allocated entitlements. Doers join the IOU queue; pivotal
-    //    Clarke payers settle in cash immediately. Track the week's net deficit.
-    let weekDeficit = 0;
-    for (const [id, receipt] of receiptsByWeek.get(week) ?? []) {
-      weekDeficit += receipt;
-      if (receipt > 0) queue.push({ id, amount: receipt });
-      else if (receipt < 0) {
-        credit(id, receipt);
-        cash += -receipt;
-      }
-    }
-
-    // 2. Notional: assess the full marked-up levy whether or not cash is collected.
-    notional += weekDeficit - wk.levyCents;
-
-    // 3. Cash: collect only enough to cover the outstanding IOUs, never more, and
-    //    never faster than the marked-up levy. Split equally across members.
-    const outstanding = queue.reduce((s, iou) => s + iou.amount, 0);
-    const cashLevy = Math.min(wk.levyCents, Math.max(0, outstanding - cash));
-    const cashPerMember = members.length ? Math.round(cashLevy / members.length) : 0;
-    for (const m of members) {
-      credit(m.id, -cashPerMember);
-      cash += cashPerMember;
-    }
-
-    // 4. Pay the house's oldest IOUs from whatever cash it now holds.
-    while (cash > 0 && queue.length) {
-      const iou = queue[0];
-      const pay = Math.min(cash, iou.amount);
-      iou.amount -= pay;
-      cash -= pay;
-      credit(iou.id, pay);
-      if (iou.amount <= 0) queue.shift();
-    }
-
-    out.set(week, { byRoommate: net, houseDeficitCents: notional, settled: wk.settled });
-  }
-  return out;
 }
 
 // Only 'done' instances pay out. Nets are summed per roommate (membership is
 // handled inside ledgerForInstance); recorded settle-up payments then move money
-// between roommates without touching the house. The house is the counterparty
-// that balances the chore ledger (0 under AGV, the deficit under VCG).
+// between roommates without touching the house. Every mechanism is exactly
+// budget-balanced, so the house residual is always zero.
 export function computeBalances(
   instances: RawInstance[],
   people: Person[],
@@ -497,7 +407,6 @@ export function computeBalances(
   mechanism: Mechanism,
   prefsByInstance: Record<number, Record<number, NullablePref>> = {},
   recordedPayments: RecordedPayment[] = [],
-  financing: Financing = 'none',
 ): Balances {
   const net: Record<number, number> = {};
   for (const p of people) net[p.id] = 0;
@@ -512,22 +421,6 @@ export function computeBalances(
     }
   }
 
-  // 'ema' financing: levy the marked-up EMA rate on each settled week's members.
-  // This is a roommate->pot flow, so it lifts roommateTotal and shrinks the house
-  // residual (the financing float) toward a small surplus over time.
-  let weeklyRateCents = 0;
-  if (financing === 'ema') {
-    const { schedule, nextRateCents } = computeFinancing(instances, people, prefsByChore, mechanism, prefsByInstance);
-    for (const [week, f] of schedule) {
-      if (!f.settled) continue; // an unsettled week shows a projected levy but isn't collected yet
-      for (const member of membersForWeek(people, week)) {
-        if (member.id in net) net[member.id] += f.perMemberCents;
-        roommateTotal += f.perMemberCents;
-      }
-    }
-    weeklyRateCents = nextRateCents;
-  }
-
   // A recorded payment of A -> B settles A's debt: A's net falls, B's rises.
   // It nets to zero across the two, so the house is unaffected.
   for (const pay of recordedPayments) {
@@ -540,7 +433,7 @@ export function computeBalances(
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const houseCents = -roommateTotal || 0;
-  return { nets, settlements: settle(nets), houseCents, weeklyRateCents };
+  return { nets, settlements: settle(nets), houseCents };
 }
 
 // Greedy debtor/creditor matching, same as the old backend settle_balances.

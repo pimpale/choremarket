@@ -11,8 +11,9 @@ from .weeks import current_week, due_date_for, upcoming_week
 
 
 VALID_STATUSES = {"pending", "done", "failed"}
-MECHANISMS = {"agv", "vcg", "bailey-cavallo"}
-FINANCINGS = {"none", "ema"}
+# Exact-budget-balance mechanisms only; the client derives all transfers.
+MECHANISMS = {"first-best", "vickrey-majority", "vickrey-faltings"}
+DEFAULT_MECHANISM = "first-best"
 CADENCES = {"weekly", "monthly", "ad-hoc"}
 
 # (name, description, cadence). These mirror the real chores our house ran.
@@ -50,8 +51,10 @@ def set_setting(key: str, value: str) -> None:
 
 
 def get_mechanism() -> str:
-    value = get_setting("mechanism", "agv")
-    return value if value in MECHANISMS else "agv"
+    # Falls back to the default for retired values (agv/vcg/bailey-cavallo)
+    # still stored in older databases.
+    value = get_setting("mechanism", DEFAULT_MECHANISM)
+    return value if value in MECHANISMS else DEFAULT_MECHANISM
 
 
 def set_mechanism(value: str) -> str:
@@ -60,20 +63,6 @@ def set_mechanism(value: str) -> str:
     if value not in MECHANISMS:
         raise ValueError(f"Unknown mechanism: {value!r}")
     set_setting("mechanism", value)
-    return value
-
-
-def get_financing() -> str:
-    value = get_setting("financing", "none")
-    return value if value in FINANCINGS else "none"
-
-
-def set_financing(value: str) -> str:
-    """Persist the financing policy (orthogonal to the mechanism). Like the
-    mechanism, the levy itself is derived on the client."""
-    if value not in FINANCINGS:
-        raise ValueError(f"Unknown financing: {value!r}")
-    set_setting("financing", value)
     return value
 
 

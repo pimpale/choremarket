@@ -115,7 +115,7 @@ def init_db() -> None:
                 value TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO app_settings (key, value) VALUES ('mechanism', 'agv');
+            INSERT OR IGNORE INTO app_settings (key, value) VALUES ('mechanism', 'first-best');
             """
         )
         seed_recurring_chores(conn)

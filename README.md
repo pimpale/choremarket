@@ -5,9 +5,25 @@ A small FastAPI + SQLite app with a React-Bootstrap frontend for a roommate chor
 The data model splits chores into **recurring chores** (templates) and **chore instances**
 (the actual ledger rows). Weeks run **Sunday → Saturday**; a background scheduler spawns one
 instance per active recurring chore each week (with catch-up on startup), auto-assigning it via
-the AGV mechanism from each roommate's recurring-chore preferences. One-off chores are entered
+the active mechanism from each roommate's recurring-chore preferences. One-off chores are entered
 directly onto the ledger. Every instance has mutually-exclusive **done** / **failed** state —
 money only pays out when an instance is marked done.
+
+All three selectable mechanisms are **exactly budget-balanced** (every chore's transfers sum to
+zero, so there is no house account): the doer is financed by an equal per-head split of a single
+price. They differ in how that price is set and who decides whether the chore happens:
+
+- **First-Best** — the doer is paid their own bid whenever total WTP covers it (efficiency
+  benchmark, not strategyproof).
+- **Vickrey + Majority** — the doer is paid the second-lowest bid; the chore happens only if a
+  strict majority's WTP covers their equal share of that price.
+- **Vickrey + FaltingsFair** — the same Vickrey price, but the go/no-go decision is made by a
+  jury of everyone except one roommate (drawn deterministically per instance), with zero-sum
+  fairness side-payments compensating the excluded roommate. Strategyproof on both sides.
+  Because money only moves when a chore is done, the fairness side-payments settle only on
+  funded chores, scaled by n/k (k = number of juries that would fund) so their expectation over
+  draws matches the always-paid mechanism — an exhaustive grid audit confirms this settlement
+  adds no exploitability, whereas dropping them unscaled measurably distorts WTP reporting.
 
 Pages:
 

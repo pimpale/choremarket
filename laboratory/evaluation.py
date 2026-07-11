@@ -19,6 +19,8 @@ DISPLAY_NAMES = {
     "lp_demand_vickrey": "LP Demand + Vickrey",
     "lp_demand_vickrey_coarse": "LP Demand + Vickrey (coarse WTP)",
     "lp_demand_vickrey_fine": "LP Demand + Vickrey (fine WTP)",
+    "lp_demand_vickrey_raw_coarse_wtp": "LP Demand + Vickrey (raw bids, coarse WTP)",
+    "lp_demand_vickrey_raw_fine_wtp": "LP Demand + Vickrey (raw bids, fine WTP)",
     "lp_integrated_supply_demand": "LP Integrated Supply/Demand",
     "coarse_grid_oracle": "Coarse grid oracle",
     "fine_wtp_grid_oracle": "Fine-WTP grid oracle",
@@ -123,6 +125,40 @@ def write_summaries(summaries: Sequence[WelfareSummary], path: str | Path) -> No
     write_rows([summary.__dict__ for summary in summaries], path)
 
 
+def plot_regret_cdf(
+    rows: Sequence[dict],
+    path: str | Path,
+    title: str,
+) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Matplotlib is required; run uv sync --extra laboratory") from exc
+
+    names = list(dict.fromkeys(str(row["mechanism"]) for row in rows))
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for name in names:
+        regrets = sorted(
+            float(row["regret"]) for row in rows if row["mechanism"] == name
+        )
+        y = [(i + 1) / len(regrets) for i in range(len(regrets))]
+        ax.step(
+            regrets,
+            y,
+            where="post",
+            label=display_name(name),
+            linewidth=1.5,
+        )
+    ax.set_xlabel("Welfare regret")
+    ax.set_ylabel("Cumulative share of profiles")
+    ax.set_title(title)
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=7, ncol=2)
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
 def plot_comparison(
     exhaustive_rows: Sequence[dict],
     synthetic_rows: Sequence[dict],
@@ -151,29 +187,11 @@ def plot_comparison(
     fig.savefig(output_dir / "exhaustive_welfare_ratio.png", dpi=180)
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    for name in names:
-        regrets = sorted(
-            float(row["regret"])
-            for row in exhaustive_rows
-            if row["mechanism"] == name
-        )
-        y = [(i + 1) / len(regrets) for i in range(len(regrets))]
-        ax.step(
-            regrets,
-            y,
-            where="post",
-            label=display_name(name),
-            linewidth=1.5,
-        )
-    ax.set_xlabel("Welfare regret")
-    ax.set_ylabel("Cumulative share of profiles")
-    ax.set_title("Exhaustive-grid regret distribution")
-    ax.grid(alpha=0.25)
-    ax.legend(fontsize=7, ncol=2)
-    fig.tight_layout()
-    fig.savefig(output_dir / "exhaustive_regret_cdf.png", dpi=180)
-    plt.close(fig)
+    plot_regret_cdf(
+        exhaustive_rows,
+        output_dir / "exhaustive_regret_cdf.png",
+        "Exhaustive-grid regret distribution",
+    )
 
     synthetic_names = list(dict.fromkeys(str(row["mechanism"]) for row in synthetic_rows))
     synthetic_summaries = summarize(synthetic_rows)

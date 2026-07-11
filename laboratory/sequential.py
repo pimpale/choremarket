@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import multiprocessing
+import os
+from concurrent.futures import ProcessPoolExecutor
 from math import ceil
 
-from .domain import ChoreDomain, Outcome, Profile
-from .demand_lp import DemandLPSolution, solve_unrestricted_demand_lp
+from .domain import ChoreDomain, Outcome, Profile, nearest_level
+from .demand_lp import DemandLottery, DemandLPSolution, solve_unrestricted_demand_lp
 from .mechanism import Lottery, deterministic_lottery
+from .profiling import timed
 
 
 def procurement(reports: Profile) -> tuple[int, float, float]:
@@ -103,6 +107,71 @@ class EqualSplitVickreyFaltingsFair:
         )
 
 
+def _single_threaded_solver() -> None:
+    # Worker initializer: many small single-threaded LPs in parallel beat a
+    # few multithreaded ones fighting over the same cores.
+    os.environ["CHOREMARKET_LP_THREADS"] = "1"
+
+
+def _solve_price_indexed_demand(
+    n: int,
+    values: tuple[float, ...],
+    prices: tuple[float, ...],
+    solver_name: str,
+    label: str,
+) -> dict[float, DemandLPSolution]:
+    with timed(f"demand LP solves ({label})"):
+        # The per-price LPs are independent; solve them across processes.
+        # Threads would not help: Pyomo model construction is Python-bound.
+        if len(prices) < 4:
+            return {
+                price: solve_unrestricted_demand_lp(
+                    n, values, prices, price, solver_name
+                )
+                for price in prices
+            }
+        workers = min(len(prices), os.cpu_count() or 1)
+        # Spawn, not fork: the parent has already run multithreaded HiGHS
+        # solves, and forked children inherit its native thread state broken.
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=_single_threaded_solver,
+        ) as pool:
+            futures = {
+                price: pool.submit(
+                    solve_unrestricted_demand_lp, n, values, prices, price, solver_name
+                )
+                for price in prices
+            }
+            return {price: future.result() for price, future in futures.items()}
+
+
+def _compose_supply_demand(
+    demand: DemandLottery,
+    performer: int,
+    price: float,
+    n: int,
+    residual: float = 0.0,
+) -> Lottery:
+    """Attach the procurement payment (and any price-rounding residual)."""
+
+    probabilities: dict[Outcome, float] = {}
+    masses: dict[Outcome, tuple[float, ...]] = {}
+    for funded, probability in demand.probabilities.items():
+        outcome: Outcome = performer if funded else None
+        transfers = list(demand.transfer_mass[funded])
+        if funded:
+            # Demand transfers collect the rounded price; the equal residual
+            # charge tops that up to the exact price paid to the winner.
+            for i in range(n):
+                transfers[i] -= residual * probability / n
+            transfers[performer] += price * probability
+        probabilities[outcome] = probability
+        masses[outcome] = tuple(transfers)
+    return Lottery(probabilities=probabilities, transfer_mass=masses)
+
+
 class UnrestrictedDemandSequential:
     """Reverse Vickrey plus a full price-indexed randomized demand LP."""
 
@@ -117,35 +186,58 @@ class UnrestrictedDemandSequential:
     ) -> None:
         if name is not None:
             self.name = name
-        values = sorted({t.value for t in domain.types})
-        prices = sorted({t.cost for t in domain.types})
-        self.solutions: dict[float, DemandLPSolution] = {
-            price: solve_unrestricted_demand_lp(
-                domain.n,
-                values,
-                prices,
-                price=price,
-                solver_name=solver_name,
-            )
-            for price in prices
-        }
+        values = tuple(sorted({t.value for t in domain.types}))
+        prices = tuple(sorted({t.cost for t in domain.types}))
+        self.solutions = _solve_price_indexed_demand(
+            domain.n, values, prices, solver_name, self.name
+        )
 
     def run(self, reports: Profile) -> Lottery:
         n = len(reports)
         performer, _, price = procurement(reports)
         values = tuple(t.value for t in reports)
         demand = self.solutions[price].run(values)
-        probabilities: dict[Outcome, float] = {}
-        masses: dict[Outcome, tuple[float, ...]] = {}
-        for funded, probability in demand.probabilities.items():
-            outcome: Outcome = performer if funded else None
-            transfers = list(demand.transfer_mass[funded])
-            if funded:
-                # Demand transfers collect price; procurement pays it to winner.
-                transfers[performer] += price * probability
-            probabilities[outcome] = probability
-            masses[outcome] = tuple(transfers)
-        return Lottery(
-            probabilities=probabilities,
-            transfer_mass=masses,
+        return _compose_supply_demand(demand, performer, price, n)
+
+
+class RawBidDemandSequential:
+    """Reverse Vickrey on raw cost bids plus the price-indexed demand LP.
+
+    The deployment interface of the sequential composition: performer
+    selection and the Vickrey price use unquantized bids, so no supply-side
+    welfare is lost to a report grid. WTP reports are quantized internally to
+    the demand grid, and the demand lottery is looked up at the nearest level
+    of a configurable price grid. The performer receives the exact Vickrey
+    price; the gap to the rounded price is charged equally in the funded
+    branch, keeping the composition exactly budget balanced and supply-side
+    DSIC, while demand incentives are within (price step)/(2n) of exact.
+    """
+
+    name = "lp_demand_vickrey_raw_bids"
+
+    def __init__(
+        self,
+        n: int,
+        value_levels: tuple[float, ...],
+        price_levels: tuple[float, ...],
+        solver_name: str = "appsi_highs",
+        *,
+        name: str | None = None,
+    ) -> None:
+        if name is not None:
+            self.name = name
+        self.value_levels = tuple(sorted({float(v) for v in value_levels}))
+        prices = tuple(sorted({float(p) for p in price_levels}))
+        self.solutions = _solve_price_indexed_demand(
+            n, self.value_levels, prices, solver_name, self.name
+        )
+
+    def run(self, reports: Profile) -> Lottery:
+        n = len(reports)
+        performer, _, price = procurement(reports)
+        rounded = nearest_level(price, self.solutions)
+        values = tuple(nearest_level(t.value, self.value_levels) for t in reports)
+        demand = self.solutions[rounded].run(values)
+        return _compose_supply_demand(
+            demand, performer, price, n, residual=price - rounded
         )

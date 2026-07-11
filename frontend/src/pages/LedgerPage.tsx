@@ -3,7 +3,7 @@ import { Download, ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from 'rea
 import { Alert, Button, Form, Modal, ProgressBar, Tab, Table, Tabs } from 'react-bootstrap';
 
 import { api, cents, centsToDollars, dollarsToCents, paymentClass, useAsync } from '../lib/api';
-import { computeFinancing, computeFinancingCashflow, ledgerForInstance, membersForWeek, type InstanceLedger, type Person, type RawInstance } from '../lib/mechanism';
+import { ledgerForInstance, membersForWeek, type InstanceLedger, type Mechanism, type Person, type RawInstance } from '../lib/mechanism';
 
 // Shortest prefix of each name that's still unique among the others, e.g.
 // ["Bob", "Rob", "Ronald"] -> ["B", "Rob", "Ron"].
@@ -59,7 +59,6 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
 
   const [showPrefs, setShowPrefs] = useState(false);
   const [showMech, setShowMech] = useState(false);
-  const [showFin, setShowFin] = useState(false);
   const [toolbarOpen, setToolbarOpen] = useState(false);
   const [openRoommates, setOpenRoommates] = useState<Set<number>>(() => new Set());
   const [recurringModal, setRecurringModal] = useState<any>(null);
@@ -73,14 +72,10 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   const recurringChores = data?.recurring_chores || [];
   const prefsByChore = data?.preferences_by_chore || {};
   const prefsByInstance = data?.preferences_by_instance || {};
-  const mechanism = data?.mechanism || 'agv';
-  const financing = data?.financing || 'none';
-  // Bailey-Cavallo shares VCG's column layout (house account + Clarke taxes) and
-  // then adds its own Redistribution section for the Cavallo term.
-  const isBC = mechanism === 'bailey-cavallo';
-  const vcgLike = mechanism === 'vcg' || isBC;
-  // The Financing column only exists when EMA financing is on.
-  const finActive = financing === 'ema';
+  const mechanism: Mechanism = data?.mechanism || 'first-best';
+  // Both Vickrey mechanisms share the second-price columns; they differ only in
+  // who decides funding (majority vote vs the FaltingsFair jury draw).
+  const isVickrey = mechanism !== 'first-best';
   const people: Person[] = allRoommates.map((r: any) => ({
     id: r.id,
     name: r.name,
@@ -112,32 +107,6 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   );
   const ledgerOf = (instance: any): InstanceLedger =>
     ledgers.get(instance.id) ?? { assigneeId: null, surplusCents: 0, worthDoing: true, payments: {}, displayStatus: 'pending' };
-
-  // The per-week EMA financing schedule (only the settled weeks carry a levy).
-  const finSchedule = finActive
-    ? computeFinancing(instances.map(rawOf), people, prefsByChore, mechanism, prefsByInstance).schedule
-    : new Map();
-
-  // Under financing the Transfer column shows actual net cash per roommate per
-  // week: the flat levy everyone pays in, plus whatever the house pays back out of
-  // its IOU queue. A doer is credited the week they do a chore but paid over the
-  // following weeks, so this is an amortized cash flow, summarized per week (a tall
-  // cell) since the levy is one-per-week rather than per chore.
-  const finCashflow = finActive
-    ? computeFinancingCashflow(instances.map(rawOf), people, prefsByChore, mechanism, prefsByInstance)
-    : new Map();
-  const finNetByWeek = new Map<string, { id: number; name: string; netCash: number; projected: boolean }[]>();
-  for (const [week, flow] of finCashflow) {
-    finNetByWeek.set(
-      week,
-      membersForWeek(people, week).map((m) => ({
-        id: m.id,
-        name: m.name,
-        netCash: flow.byRoommate.get(m.id) ?? 0,
-        projected: !flow.settled,
-      })),
-    );
-  }
 
   function assigneeNetCents(instance: any): number | null {
     const ledger = ledgerOf(instance);
@@ -407,69 +376,43 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   const prefCols = showPrefs
     ? roommates.reduce((acc: number, roommate: any) => acc + (isOpen(roommate.id) ? 2 : 1), 0)
     : 1;
-  const mechanismColumns =
-    vcgLike
+  // Shared prefix: the raw inputs. The Vickrey mechanisms then show the
+  // second-price block plus their funding decision (majority vote or the
+  // FaltingsFair jury draw); first-best shows the equal split of the doer's
+  // own bid. All end with the per-roommate zero-sum transfers.
+  const transferColumns = roommates.map((roommate: any) => ({
+    key: `transfer-${roommate.id}`,
+    label: roommate.name,
+  }));
+  const mechanismColumns = [
+    { key: 'total-wtp', label: 'Total WTP' },
+    { key: 'lowest-bid', label: 'Lowest bid' },
+    { key: 'surplus', label: 'Surplus' },
+    ...(isVickrey
       ? [
-          { key: 'total-wtp', label: 'Total WTP' },
-          { key: 'lowest-bid', label: 'Lowest bid' },
-          { key: 'surplus', label: 'Surplus' },
           { key: 'second-lowest', label: '2nd bid' },
-          { key: 'doer-paid', label: 'Doer paid' },
-          { key: 'house', label: 'House' },
-          ...roommates.map((roommate: any) => ({
-            key: `clarke-${roommate.id}`,
-            label: roommate.name,
-          })),
-          // Bailey-Cavallo adds a per-roommate redistribution column after the
-          // Clarke taxes, kept separate so the rebate/charge isn't hidden in the tax.
-          ...(isBC
-            ? roommates.map((roommate: any) => ({
-                key: `rebate-${roommate.id}`,
-                label: roommate.name,
-              }))
-            : []),
+          { key: 'per-head', label: 'Per head' },
+          mechanism === 'vickrey-majority'
+            ? { key: 'support', label: 'Support' }
+            : { key: 'excluded', label: 'Jury draw' },
         ]
-      : [
-          { key: 'total-wtp', label: 'Total WTP' },
-          { key: 'lowest-bid', label: 'Lowest bid' },
-          { key: 'surplus', label: 'Surplus' },
-          { key: 'avg-value', label: 'Avg value' },
-          ...roommates.map((roommate: any) => ({
-            key: `transfer-${roommate.id}`,
-            label: roommate.name,
-          })),
-        ];
-  const mechanismGroups =
-    vcgLike
+      : [{ key: 'per-head', label: 'Per head' }]),
+    ...transferColumns,
+  ];
+  const mechanismGroups = [
+    { label: 'Inputs', colSpan: 3 },
+    ...(isVickrey
       ? [
-          { label: 'Inputs', colSpan: 3 },
-          { label: 'VCG price', colSpan: 3 },
-          ...(roommates.length ? [{ label: 'Clarke tax', colSpan: roommates.length }] : []),
-          ...(isBC && roommates.length ? [{ label: 'Redistribution of deficit share', colSpan: roommates.length }] : []),
+          { label: 'Vickrey price', colSpan: 2 },
+          { label: mechanism === 'vickrey-majority' ? 'Vote' : 'Fair draw', colSpan: 1 },
         ]
-      : [
-          { label: 'Inputs', colSpan: 3 },
-          { label: 'AGV share', colSpan: 1 },
-          ...(roommates.length ? [{ label: 'Transfers', colSpan: roommates.length }] : []),
-        ];
+      : [{ label: 'Equal split', colSpan: 1 }]),
+    ...(roommates.length ? [{ label: 'Transfers', colSpan: roommates.length }] : []),
+  ];
   const mechCols = showMech ? mechanismColumns.length : 1;
-  const financingColumns = [
-    { key: 'fin-deficit', label: 'Deficit' },
-    { key: 'fin-ema', label: 'EMA' },
-    { key: 'fin-levy', label: 'Levy' },
-    { key: 'fin-share', label: 'Per head' },
-    { key: 'fin-house', label: 'House after' },
-  ];
-  const financingGroups = [
-    { label: 'This chore', colSpan: 1 },
-    { label: 'Weekly levy', colSpan: 3 },
-    { label: 'Running', colSpan: 1 },
-  ];
-  // 0 columns when financing is off; otherwise the collapsible block (1 edge / full).
-  const finCols = finActive ? (showFin ? financingColumns.length : 1) : 0;
   // Fixed data columns (Due, Chore, Transfer, Done, Failed, delete),
-  // plus the collapsible WTP/Bid, Mechanism, and Financing blocks.
-  const addColSpan = 6 + prefCols + mechCols + finCols;
+  // plus the collapsible WTP/Bid and Mechanism blocks.
+  const addColSpan = 6 + prefCols + mechCols;
 
   // Reconstruct the per-roommate bids/WTP for the chore from the prefs grid,
   // limited to the roommates who participate in this instance's week.
@@ -498,15 +441,12 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
       partyLabel?: string;
       subLabel?: string;
       start?: boolean;
-      rowSpan?: number;
-      extraClass?: string;
     } = { tip: '' },
   ) {
     return (
       <td
         key={key}
-        rowSpan={opts.rowSpan}
-        className={`num mech-data-cell${opts.start ? ' mech-cell-start' : ''}${opts.extraClass ? ` ${opts.extraClass}` : ''}`}
+        className={`num mech-data-cell${opts.start ? ' mech-cell-start' : ''}`}
         title={opts.tip}
       >
         {opts.partyLabel ? <span className="mech-cell-party">{opts.partyLabel}</span> : null}
@@ -554,9 +494,47 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
       );
     }
 
-    const { totalWtp, byBid } = choreFinancials(instance);
+    const { totalWtp, byBid, people: choreMembers } = choreFinancials(instance);
     const lowest = byBid[0];
     const paymentOf = (id: number) => ledger.payments[id] ?? 0;
+    const detail = ledger.detail;
+    const memberCount = choreMembers.length;
+
+    // The funding-decision cell each Vickrey mechanism owns: the majority vote
+    // tally, or the realized FaltingsFair jury draw.
+    const fundingCell = () => {
+      if (!detail) return blankMechCell(mechanism === 'vickrey-majority' ? 'support' : 'excluded');
+      if (mechanism === 'vickrey-majority') {
+        const funded = (detail.supporters ?? 0) >= (detail.required ?? 1);
+        return mechValueCell('support', `${detail.supporters} of ${memberCount}`, {
+          subLabel: `need ${detail.required}`,
+          valueClass: funded ? 'receive' : 'pay',
+          tip: 'How many roommates’ WTP covers the per-head share. The chore happens only with a strict majority — nobody can be dragged into funding something most don’t accept.',
+        });
+      }
+      const excludedName = detail.excludedId != null ? nameById.get(detail.excludedId) ?? detail.excludedId : '—';
+      return mechValueCell('excluded', String(excludedName), {
+        partyLabel: 'excluded',
+        subLabel: detail.juryFunds ? 'jury funds' : 'jury declines',
+        valueClass: detail.juryFunds ? 'receive' : 'pay',
+        tip: 'FaltingsFair: one roommate (drawn per chore) sits out of the go/no-go decision; the rest are the jury. The excluded roommate is compensated by zero-sum fairness side-payments folded into the transfers, which keeps everyone truthful.',
+      });
+    };
+
+    const vickreyPriceCells = () =>
+      !detail
+        ? [blankMechCell('second-lowest'), blankMechCell('per-head')]
+        : [
+            mechValueCell('second-lowest', cents(detail.priceCents), {
+              partyLabel:
+                detail.priceSetterId != null ? `from ${nameById.get(detail.priceSetterId)}` : undefined,
+              tip: 'The Vickrey price: the doer is paid the second-lowest bid, not their own. Undercutting rivals never changes your pay, so bidding your true cost is dominant.',
+            }),
+            mechValueCell('per-head', cents(detail.shareCents), {
+              partyLabel: `× ${memberCount}`,
+              tip: 'Each roommate’s equal share financing the doer’s pay: the Vickrey price split evenly. Shares exactly cover the price, so the transfers sum to $0.',
+            }),
+          ];
 
     if (ledger.assigneeId == null) {
       const baseCells = [
@@ -570,8 +548,11 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         mechValueCell('surplus', cents(ledger.surplusCents), {
           valueClass: 'pay',
           subLabel: 'skipped',
-          tip: 'Skipped: total WTP is below the lowest bid, so this is the shortfall.',
+          tip: ledger.skipReason
+            ? `Skipped: ${ledger.skipReason}.`
+            : 'Skipped under the current mechanism.',
         }),
+        ...(isVickrey ? [...vickreyPriceCells(), fundingCell()] : []),
       ];
       return [
         ...baseCells,
@@ -580,174 +561,53 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     }
 
     const doer = byBid.find((p: any) => p.id === ledger.assigneeId) ?? lowest;
-    const others = byBid.filter((p: any) => p.id !== ledger.assigneeId);
-    const secondLowest = others[0];
-    // House = whatever the roommate transfers don't cover (zero under AGV).
-    const house = -Object.values(ledger.payments).reduce((sum: number, amount) => sum + amount, 0);
-
-    if (vcgLike) {
-      // Bailey-Cavallo's per-roommate net is base_i (the raw VCG payment) minus the
-      // redistribution h_i. Recover the raw VCG numbers from the VCG ledger so the
-      // Clarke tax and doer-paid columns show the underlying price, and the
-      // redistribution gets its own column rather than being folded in.
-      const vcgLedger = isBC
-        ? ledgerForInstance(rawOf(instance), people, prefsByChore, 'vcg', prefsByInstance)
-        : ledger;
-      const baseOf = (id: number) => vcgLedger.payments[id] ?? 0;
-      const doerNet = -baseOf(doer.id);
-      return [
-        mechValueCell('total-wtp', cents(totalWtp), { tip: wtpTip, start: true }),
-        mechValueCell('lowest-bid', cents(doer.bid), { partyLabel: `from ${doer.name}`, tip: lowestBidTip }),
-        mechValueCell('surplus', cents(ledger.surplusCents), {
-          valueClass: paymentClass(-ledger.surplusCents),
-          subLabel: ledger.surplusCents < 0 ? 'skipped' : undefined,
-          tip: 'Value the household gains = total WTP minus the lowest bid.',
-        }),
-        secondLowest
-          ? mechValueCell('second-lowest', cents(secondLowest.bid), {
-              partyLabel: `from ${secondLowest.name}`,
-              tip: 'Sets the doer’s pay: under VCG the doer is paid the second-lowest bid (the Vickrey price).',
-            })
-          : blankMechCell('second-lowest'),
-        mechValueCell('doer-paid', cents(doerNet), {
-          partyLabel: `to ${doer.name}`,
-          valueClass: 'receive',
-          tip: isBC
-            ? 'The raw VCG price the assignee earns — the second-lowest bid. Bailey–Cavallo then adjusts it by the redistribution column to the right.'
-            : 'What the assignee receives — the second-lowest bid (capped at the value they uniquely unlock when the job is only barely worth doing).',
-        }),
-        mechValueCell('house', cents(house), {
-          valueClass: paymentClass(house),
-          tip: isBC
-            ? 'What the house is left holding after the VCG price and the Cavallo redistribution: positive = residual deficit, negative = it over-collected into a surplus. Bailey–Cavallo only approaches budget balance.'
-            : 'VCG is not budget-balanced: the house covers the doer’s pay minus any Clarke taxes. Positive = deficit.',
-        }),
-        ...roommates.map((roommate: any) => {
-          const amount = baseOf(roommate.id);
-          if (roommate.id === ledger.assigneeId) return blankMechCell(`clarke-${roommate.id}`);
-          return mechValueCell(`clarke-${roommate.id}`, cents(amount), {
-            partyLabel: `from ${roommate.name}`,
-            valueClass: amount > 0 ? 'pay' : undefined,
-            tip:
-              'Clarke (pivotal) tax: a non-doer pays only when their WTP is what tips the chore from “not worth doing” to “worth doing.” It is $0 whenever there is surplus WTP to spare, and helps fund the doer’s pay when it does bite.',
-          });
-        }),
-        // Bailey-Cavallo redistribution h_i = base_i - net_i: positive = a rebate the
-        // roommate receives, negative = a share of the house deficit they're charged.
-        ...(isBC
-          ? roommates.map((roommate: any) => {
-              const h = baseOf(roommate.id) - paymentOf(roommate.id);
-              if (h === 0) {
-                return mechValueCell(`rebate-${roommate.id}`, cents(0), {
-                  partyLabel: roommate.name,
-                  tip: 'Bailey–Cavallo redistribution: 1/n of the VCG revenue the other roommates would generate without this one. Zero here.',
-                });
-              }
-              const receives = h > 0;
-              return mechValueCell(`rebate-${roommate.id}`, cents(Math.abs(h)), {
-                partyLabel: `${receives ? 'to' : 'from'} ${roommate.name}`,
-                valueClass: receives ? 'receive' : 'pay',
-                tip:
-                  'Bailey–Cavallo redistribution = 1/n of the VCG revenue the OTHER roommates would generate without this one. A surplus is rebated (to, green); a deficit is shared back as a charge (from, red). It depends only on the others’ bids, so it keeps the mechanism strategyproof.',
-              });
-            })
-          : []),
-      ];
-    }
-
-    // AGV: budget-balanced expected-externality redistribution.
-    const avgValue = Math.round(ledger.surplusCents / Math.max(1, byBid.length));
-    return (
-      [
-        mechValueCell('total-wtp', cents(totalWtp), { tip: wtpTip, start: true }),
-        mechValueCell('lowest-bid', cents(doer.bid), { partyLabel: `from ${doer.name}`, tip: lowestBidTip }),
-        mechValueCell('surplus', cents(ledger.surplusCents), {
-          subLabel: ledger.surplusCents < 0 ? 'skipped' : undefined,
-          tip: 'Value the household gains = total WTP minus the lowest bid. AGV shares this out.',
-        }),
-        mechValueCell('avg-value', cents(avgValue), {
-          tip: 'The pay/receive threshold: a roommate whose value of the outcome (their WTP, minus their bid if they are the doer) is below this average is paid; those above it pay.',
-        }),
-        ...roommates.map((roommate: any) => {
-          const amount = paymentOf(roommate.id);
-          const receives = amount < 0;
-          const displayAmount = receives ? -amount : amount;
-          return mechValueCell(`transfer-${roommate.id}`, cents(displayAmount), {
-            partyLabel:
-              amount === 0
-                ? roommate.name
-                : `${receives ? 'to' : 'from'} ${roommate.name}`,
-            valueClass: paymentClass(amount),
-            tip:
-              'AGV redistribution (positive pays, negative receives). Receiving transfers are shown as positive green amounts here. All transfers sum to $0.',
-          });
-        }),
-      ]
-    );
-  }
-
-  // Financing block: a per-chore Deficit column, then the household-weekly EMA
-  // levy that amortizes it. The levy/EMA/share figures are one-per-week, so they
-  // render as a single tall cell spanning the week's rows (only on the first row;
-  // later rows are covered by the rowSpan). They are blank until the week settles.
-  function financingCells(instance: any, ledger: InstanceLedger, rowIndex: number, weekRows: number) {
-    const house = -Object.values(ledger.payments).reduce((sum: number, amount) => sum + amount, 0);
-    const deficitCell = mechValueCell('fin-deficit', cents(house), {
-      valueClass: paymentClass(house),
-      start: true,
-      tip: 'This chore’s house shortfall — the part no roommate pays for. EMA financing pools these across the week and amortizes them instead of letting the house absorb them.',
-    });
-    // Later rows fall under the first row's rowSpan for the weekly columns.
-    if (rowIndex > 0) return [deficitCell];
-
-    const week = finSchedule.get(instance.week_start);
-    // An unsettled week (this/next week) still has a known levy from past weeks;
-    // flag it 'projected' since it isn't collected until the week settles.
-    const projected = week ? !week.settled : false;
-    const houseAfter = finCashflow.get(instance.week_start)?.houseDeficitCents ?? null;
-    const weekCell = (key: string, value: string | null, tip: string, partyLabel?: string, subLabel?: string) =>
-      mechValueCell(key, value ?? '—', {
-        tip,
-        rowSpan: weekRows,
-        extraClass: 'fin-week-cell',
-        partyLabel: value == null ? undefined : partyLabel,
-        subLabel: value == null ? undefined : subLabel,
-        valueClass: value == null ? 'muted-value' : key === 'fin-share' ? 'pay' : undefined,
-      });
+    const transferTip = (roommateId: number) => {
+      if (mechanism === 'vickrey-faltings') {
+        const adjustment = Math.round(detail?.fairAdjustmentCents?.[roommateId] ?? 0);
+        return (
+          'Net transfer (positive pays, negative receives — shown green as positive): the equal per-head share, ' +
+          `minus the Vickrey price for the doer, plus this roommate’s zero-sum fairness side-payment for the jury draw (${cents(adjustment)} received here — ` +
+          `scaled up ×${detail?.fundingJuries ? `${memberCount}/${detail.fundingJuries}` : '1'} because it only settles when the draw funds, keeping incentives exact in expectation). All transfers sum to $0.`
+        );
+      }
+      return (
+        'Net transfer (positive pays, negative receives — shown green as positive): everyone chips in the equal per-head share and the doer nets the ' +
+        (mechanism === 'first-best' ? 'own-bid price' : 'Vickrey price') +
+        ' minus their own share. All transfers sum to $0.'
+      );
+    };
     return [
-      deficitCell,
-      weekCell(
-        'fin-ema',
-        week ? cents(week.emaRateCents) : null,
-        'Smoothed weekly house deficit from prior weeks (an EMA over all chores). It sets this week’s levy and ignores the current week, so shading a single chore can’t move it.',
-      ),
-      weekCell(
-        'fin-levy',
-        week ? cents(week.levyCents) : null,
-        'What the household funds this week = EMA × 1.025 (a 2.5% markup so we drift toward a small, burnable surplus rather than a deficit). $0 the first settled week; doers are paid from this over the following weeks.',
-        undefined,
-        projected ? 'projected' : undefined,
-      ),
-      weekCell(
-        'fin-share',
-        week ? cents(week.perMemberCents) : null,
-        'Each member’s equal share of this week’s levy — same for everyone regardless of valuation, the doer included.',
-        week ? `${week.memberCount} ${week.memberCount === 1 ? 'roommate' : 'roommates'}` : undefined,
-      ),
-      houseAfter == null
-        ? mechValueCell('fin-house', '—', { tip: '', valueClass: 'muted-value', rowSpan: weekRows, extraClass: 'fin-week-cell' })
-        : mechValueCell('fin-house', cents(houseAfter), {
-            tip: 'The house’s notional running balance: total entitlements owed minus the full marked-up levy assessed. Positive = still owed (deficit); negative = surplus buffer. It keeps accruing surplus on the books even when no cash is collected — to be burned later.',
-            partyLabel: houseAfter > 0 ? 'still owed' : houseAfter < 0 ? 'surplus' : undefined,
-            subLabel: projected ? 'projected' : undefined,
-            valueClass: paymentClass(houseAfter),
-            rowSpan: weekRows,
-            extraClass: 'fin-week-cell',
-          }),
+      mechValueCell('total-wtp', cents(totalWtp), { tip: wtpTip, start: true }),
+      mechValueCell('lowest-bid', cents(doer.bid), { partyLabel: `from ${doer.name}`, tip: lowestBidTip }),
+      mechValueCell('surplus', cents(ledger.surplusCents), {
+        valueClass: paymentClass(-ledger.surplusCents),
+        tip: 'Value the household gains = total WTP minus the lowest bid. It can be negative for a chore that still happens (a forced assignment, or a majority/jury that funds it anyway).',
+      }),
+      ...(isVickrey
+        ? [...vickreyPriceCells(), fundingCell()]
+        : [
+            mechValueCell('per-head', cents(detail?.shareCents ?? 0), {
+              partyLabel: `× ${memberCount}`,
+              tip: 'Each roommate’s equal share of the doer’s own bid. First-best pays the doer their bid, so shares exactly cover it and the transfers sum to $0 — but the doer profits by inflating that bid.',
+            }),
+          ]),
+      ...roommates.map((roommate: any) => {
+        const amount = paymentOf(roommate.id);
+        const receives = amount < 0;
+        const displayAmount = receives ? -amount : amount;
+        return mechValueCell(`transfer-${roommate.id}`, cents(displayAmount), {
+          partyLabel:
+            amount === 0
+              ? roommate.name
+              : `${receives ? 'to' : 'from'} ${roommate.name}`,
+          valueClass: paymentClass(amount),
+          tip: transferTip(roommate.id),
+        });
+      }),
     ];
   }
 
-  function dataCells(instance: any, rowIndex = 0, weekRows = 1) {
+  function dataCells(instance: any) {
     const draft = drafts[instance.id] || {};
     const ledger = ledgerOf(instance);
     const net = assigneeNetCents(instance);
@@ -798,9 +658,13 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
           {ledger.displayStatus === 'skipped' ? (
             <span
               className="tag tag-skipped"
-              title="Total WTP is below the lowest bid, so it isn't worth doing under the current mechanism."
+              title={ledger.skipReason ? `Skipped: ${ledger.skipReason}.` : 'Skipped under the current mechanism.'}
             >
-              skipped: WTP &lt; bid
+              {mechanism === 'first-best'
+                ? 'skipped: WTP < bid'
+                : mechanism === 'vickrey-majority'
+                  ? 'skipped: no majority'
+                  : 'skipped: jury declines'}
             </span>
           ) : null}
         </td>
@@ -869,57 +733,25 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         ) : (
           <td className="prefs-edge" />
         )}
-        {finActive ? (
-          // One tall cell per week listing each roommate's actual net cash.
-          rowIndex === 0 ? (
-            <td
-              rowSpan={weekRows}
-              className="num after-prefs transfer-week-cell"
-              title="Each roommate's net cash this week: their done-chore receipts minus the flat levy everyone pays into the pool."
-            >
-              <div className="transfer-week">
-                {(finNetByWeek.get(instance.week_start) ?? []).map((r) => (
-                  <div key={r.id} className="transfer-week-row">
-                    <span className="transfer-week-name">{r.name}</span>
-                    <span className={`transfer-week-amt ${r.netCash > 0 ? 'receive' : r.netCash < 0 ? 'pay' : ''}`}>
-                      {cents(r.netCash)}
-                    </span>
-                  </div>
-                ))}
-                {finNetByWeek.get(instance.week_start)?.[0]?.projected ? (
-                  <div className="transfer-week-note">projected</div>
-                ) : null}
-              </div>
-            </td>
-          ) : null
-        ) : (
-          <td className="num after-prefs transfer-summary-cell" title={paymentsTitle(instance)}>
-            {net == null ? (
-              <span className="cell-static">—</span>
-            ) : (
-              <>
-                <span className="transfer-summary-party">
-                  {net < 0 ? 'from' : 'to'} {nameById.get(ledger.assigneeId!)}
-                </span>
-                <span className={`transfer-summary-value ${net > 0 ? 'receive' : net < 0 ? 'pay' : ''}`}>
-                  {cents(Math.abs(net))}
-                </span>
-              </>
-            )}
-          </td>
-        )}
+        <td className="num after-prefs transfer-summary-cell" title={paymentsTitle(instance)}>
+          {net == null ? (
+            <span className="cell-static">—</span>
+          ) : (
+            <>
+              <span className="transfer-summary-party">
+                {net < 0 ? 'from' : 'to'} {nameById.get(ledger.assigneeId!)}
+              </span>
+              <span className={`transfer-summary-value ${net > 0 ? 'receive' : net < 0 ? 'pay' : ''}`}>
+                {cents(Math.abs(net))}
+              </span>
+            </>
+          )}
+        </td>
         {showMech ? (
           mechanismCells(instance, ledger)
         ) : (
           <td className="mech-edge" />
         )}
-        {finActive ? (
-          showFin ? (
-            financingCells(instance, ledger, rowIndex, weekRows)
-          ) : rowIndex === 0 ? (
-            <td className="mech-edge" rowSpan={weekRows} />
-          ) : null
-        ) : null}
         <td className="text-center">
           <Form.Check
             type="checkbox"
@@ -989,7 +821,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         }
       >
         {index === 0 ? weekCell : null}
-        {dataCells(instance, index, group.rows.length)}
+        {dataCells(instance)}
       </tr>
       );
     });
@@ -1110,35 +942,6 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
                   </span>
                 </th>
               )}
-              {finActive ? (
-                showFin ? (
-                  <th
-                    colSpan={finCols}
-                    className="mech-section-th"
-                    title="Hide financing detail"
-                    onClick={() => setShowFin(false)}
-                  >
-                    <span className="prefs-label">
-                      <ChevronRight size={11} />
-                      Financing
-                      <ChevronLeft size={11} />
-                    </span>
-                  </th>
-                ) : (
-                  <th
-                    rowSpan={3}
-                    className="mech-edge-th"
-                    title="Show financing detail"
-                    onClick={() => setShowFin(true)}
-                  >
-                    <span className="prefs-label collapsed">
-                      <ChevronLeft size={11} />
-                      FIN
-                      <ChevronRight size={11} />
-                    </span>
-                  </th>
-                )
-              ) : null}
               <th rowSpan={3} className="text-center">Done</th>
               <th rowSpan={3} className="text-center">Failed</th>
               <th rowSpan={3} aria-label="delete"></th>
@@ -1188,17 +991,6 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
                     </th>
                   ))
                 : null}
-              {finActive && showFin
-                ? financingGroups.map((group, index) => (
-                    <th
-                      key={group.label}
-                      colSpan={group.colSpan}
-                      className={`mech-group${index === 0 ? ' mech-cell-start' : ''}`}
-                    >
-                      {group.label}
-                    </th>
-                  ))
-                : null}
             </tr>
             <tr>
               {showPrefs
@@ -1213,16 +1005,6 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
                 : null}
               {showMech
                 ? mechanismColumns.map((column, index) => (
-                    <th
-                      key={column.key}
-                      className={`num mech-sub${index === 0 ? ' mech-cell-start' : ''}`}
-                    >
-                      {column.label}
-                    </th>
-                  ))
-                : null}
-              {finActive && showFin
-                ? financingColumns.map((column, index) => (
                     <th
                       key={column.key}
                       className={`num mech-sub${index === 0 ? ' mech-cell-start' : ''}`}
