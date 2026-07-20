@@ -213,56 +213,126 @@ def remove_recurring_chore(chore_id: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Preferences (week-independent wtp/bid keyed by recurring chore)
+# Preferences (append-only wtp/bid edit log keyed by recurring chore)
+#
+# Each (roommate, recurring chore) has a *history* of wtp/bid edits, each stamped
+# with when the edit was made (created_at). The value in force for a given week
+# is the most recent edit that landed on or before the end of that week. Editing
+# a bid just appends a new row, so the current/future weeks pick it up while
+# settled past weeks keep whatever value was in force then -- edits are
+# future-only, and the whole edit history is preserved.
 # --------------------------------------------------------------------------- #
+
+# Sentinel "since the beginning of time": preferences saved with this timestamp
+# (mock data) apply to every week, past included.
+BASE_CREATED_AT = "1970-01-01 00:00:00"
+
+
 def save_preference(
     roommate_id: int,
     recurring_chore_id: int,
-    wtp_cents: int,
-    bid_cents: int,
+    wtp_cents: int | None,
+    bid_cents: int | None,
+    created_at: str | None = None,
 ) -> None:
+    """Append a wtp/bid edit for a (roommate, chore).
+
+    ``created_at`` defaults to now, so the edit takes effect for the current week
+    onward and leaves settled past weeks untouched. Mock/seed data passes the
+    beginning-of-time sentinel so the value applies to every week.
+    """
     with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO chore_preferences
-                (roommate_id, recurring_chore_id, wtp_cents, bid_cents)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(roommate_id, recurring_chore_id)
-            DO UPDATE SET
-                wtp_cents = excluded.wtp_cents,
-                bid_cents = excluded.bid_cents,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (roommate_id, recurring_chore_id, wtp_cents, bid_cents),
-        )
+        if created_at is None:
+            conn.execute(
+                """
+                INSERT INTO chore_preferences
+                    (roommate_id, recurring_chore_id, wtp_cents, bid_cents)
+                VALUES (?, ?, ?, ?)
+                """,
+                (roommate_id, recurring_chore_id, wtp_cents, bid_cents),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO chore_preferences
+                    (roommate_id, recurring_chore_id, wtp_cents, bid_cents, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (roommate_id, recurring_chore_id, wtp_cents, bid_cents, created_at),
+            )
 
 
-def preferences_by_chore() -> dict[int, dict[int, dict[str, int]]]:
-    """{recurring_chore_id: {roommate_id: {wtp_cents, bid_cents}}}.
+def preferences_by_chore(
+    as_of_week: str | None = None,
+) -> dict[int, dict[int, dict[str, int | None]]]:
+    """{recurring_chore_id: {roommate_id: {wtp_cents, bid_cents}}} in force as of
+    ``as_of_week`` (defaults to the current week).
 
     Covers every roommate (not just current members) so the client can recompute
     historical weeks for people who have since left; the client filters who
-    actually participates in each week by membership dates.
+    actually participates in each week by membership dates. Unset pairs come back
+    as NULL/NULL (treated as $0 WTP and a very large bid, like one-offs).
+    """
+    as_of = as_of_week or current_week().isoformat()
+    week_end = due_date_for(date.fromisoformat(as_of)).isoformat()
+    history = preference_history_by_chore()
+    return {
+        chore_id: {
+            roommate_id: _effective_pref_from_history(entries, week_end)
+            for roommate_id, entries in by_roommate.items()
+        }
+        for chore_id, by_roommate in history.items()
+    }
+
+
+def _effective_pref_from_history(
+    entries: list[dict[str, object]], week_end: str
+) -> dict[str, int | None]:
+    """Pick the value in force for a week (whose last day is ``week_end``) from a
+    (roommate, chore) edit log sorted by created_at ascending: the most recent
+    edit made on or before that day. Unset -> NULL/NULL."""
+    chosen = None
+    for entry in entries:
+        if str(entry["created_at"])[:10] <= week_end:
+            chosen = entry
+        else:
+            break
+    if chosen is None:
+        return {"wtp_cents": None, "bid_cents": None}
+    return {"wtp_cents": chosen["wtp_cents"], "bid_cents": chosen["bid_cents"]}
+
+
+def preference_history_by_chore() -> dict[int, dict[int, list[dict[str, object]]]]:
+    """{recurring_chore_id: {roommate_id: [{created_at, wtp_cents, bid_cents}]}}.
+
+    Each roommate's list is the full edit log, sorted by created_at ascending.
+    The client resolves the value in force for each ledger week, so it can render
+    every week's economics from the value that was effective then.
     """
     roommates = all_roommates()
     chores = active_recurring_chores()
-    out: dict[int, dict[int, dict[str, int]]] = {}
+    out: dict[int, dict[int, list[dict[str, object]]]] = {}
     with connect() as conn:
         for chore in chores:
             out[chore["id"]] = {}
             for roommate in roommates:
-                row = conn.execute(
+                rows = conn.execute(
                     """
-                    SELECT wtp_cents, bid_cents
+                    SELECT created_at, wtp_cents, bid_cents
                     FROM chore_preferences
                     WHERE roommate_id = ? AND recurring_chore_id = ?
+                    ORDER BY created_at, id
                     """,
                     (roommate["id"], chore["id"]),
-                ).fetchone()
-                out[chore["id"]][roommate["id"]] = {
-                    "wtp_cents": row["wtp_cents"] if row else 0,
-                    "bid_cents": row["bid_cents"] if row else 0,
-                }
+                ).fetchall()
+                out[chore["id"]][roommate["id"]] = [
+                    {
+                        "created_at": row["created_at"],
+                        "wtp_cents": row["wtp_cents"],
+                        "bid_cents": row["bid_cents"],
+                    }
+                    for row in rows
+                ]
     return out
 
 
@@ -635,13 +705,16 @@ def convert_recurring_to_one_off(instance_id: int) -> None:
     """Detach a recurring instance into a plain, editable one-off (keeps its name
     and description; clears the auto assignee/price and the recurring link).
 
-    Snapshots the recurring chore's current per-roommate wtp/bid onto the instance
-    so the new one-off starts priced exactly as it was at the moment of
-    conversion, instead of falling back to the one-off defaults.
+    Snapshots the recurring chore's per-roommate wtp/bid *as it was effective for
+    this instance's week* onto the instance, so the new one-off starts priced
+    exactly as it was at the moment of conversion, instead of falling back to the
+    one-off defaults. An unset preference is snapshotted as NULL/NULL, which the
+    one-off computation treats identically to the recurring one (no WTP, a very
+    large bid).
     """
     with connect() as conn:
         instance = conn.execute(
-            "SELECT recurring_chore_id FROM chore_instances WHERE id = ?",
+            "SELECT recurring_chore_id, week_start FROM chore_instances WHERE id = ?",
             (instance_id,),
         ).fetchone()
         if not instance:
@@ -650,21 +723,22 @@ def convert_recurring_to_one_off(instance_id: int) -> None:
         if recurring_chore_id is None:
             raise ValueError("Only recurring instances can be converted to one-offs")
 
-        # Snapshot the chore's current wtp/bid for every roommate (an unset
-        # preference is 0/0, exactly as the recurring computation treats it).
-        saved = {
-            row["roommate_id"]: (row["wtp_cents"], row["bid_cents"])
-            for row in conn.execute(
+        # Snapshot the chore's wtp/bid effective for this instance's week for
+        # every roommate (an unset preference stays NULL/NULL).
+        week_end = due_date_for(date.fromisoformat(instance["week_start"])).isoformat()
+        roommate_ids = [row["id"] for row in conn.execute("SELECT id FROM roommates")]
+        for roommate_id in roommate_ids:
+            rows = conn.execute(
                 """
-                SELECT roommate_id, wtp_cents, bid_cents
+                SELECT created_at, wtp_cents, bid_cents
                 FROM chore_preferences
-                WHERE recurring_chore_id = ?
+                WHERE roommate_id = ? AND recurring_chore_id = ?
+                ORDER BY created_at, id
                 """,
-                (recurring_chore_id,),
-            )
-        }
-        for roommate in conn.execute("SELECT id FROM roommates"):
-            wtp, bid = saved.get(roommate["id"], (0, 0))
+                (roommate_id, recurring_chore_id),
+            ).fetchall()
+            pref = _effective_pref_from_history([dict(row) for row in rows], week_end)
+            wtp, bid = pref["wtp_cents"], pref["bid_cents"]
             conn.execute(
                 """
                 INSERT INTO chore_instance_preferences
@@ -673,7 +747,7 @@ def convert_recurring_to_one_off(instance_id: int) -> None:
                 ON CONFLICT(chore_instance_id, roommate_id)
                 DO UPDATE SET wtp_cents = excluded.wtp_cents, bid_cents = excluded.bid_cents
                 """,
-                (instance_id, roommate["id"], wtp, bid),
+                (instance_id, roommate_id, wtp, bid),
             )
 
         conn.execute(
@@ -1056,7 +1130,15 @@ def reset_mock_data(
     chore_id = {c["name"]: c["id"] for c in active_recurring_chores()}
     for chore_name, by_person in prefs.items():
         for person, (wtp, bid) in by_person.items():
-            save_preference(roommate_id[person], chore_id[chore_name], wtp, bid)
+            # Seed at the beginning of time so the mock prefs price every week,
+            # including the generated history.
+            save_preference(
+                roommate_id[person],
+                chore_id[chore_name],
+                wtp,
+                bid,
+                created_at=BASE_CREATED_AT,
+            )
 
     cur = current_week(today)
     past_weeks = [

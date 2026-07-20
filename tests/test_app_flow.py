@@ -293,9 +293,36 @@ def test_preferences_by_chore_shape(fresh_db):
     repo.save_preference(roommate["id"], chore["id"], 1234, 777)
     grid = repo.preferences_by_chore()
     assert grid[chore["id"]][roommate["id"]] == {"wtp_cents": 1234, "bid_cents": 777}
-    # Unset pairs default to zero rather than going missing.
+    # Unset pairs come back NULL/NULL (the client treats an unset bid as a very
+    # large ask, like one-offs) rather than going missing.
     other = repo.active_roommates()[1]
-    assert grid[chore["id"]][other["id"]] == {"wtp_cents": 0, "bid_cents": 0}
+    assert grid[chore["id"]][other["id"]] == {"wtp_cents": None, "bid_cents": None}
+
+
+def test_recurring_preference_edit_is_future_only(fresh_db):
+    roommate = repo.active_roommates()[0]
+    chore = repo.active_recurring_chores()[0]
+    # An original bid effective for all of history, then an edit made "now".
+    repo.save_preference(roommate["id"], chore["id"], 1000, 1000, created_at=repo.BASE_CREATED_AT)
+    repo.save_preference(roommate["id"], chore["id"], 2000, 2000)
+
+    # A long-settled past week still sees the original value...
+    past_grid = repo.preferences_by_chore(as_of_week="2020-01-05")
+    assert past_grid[chore["id"]][roommate["id"]] == {"wtp_cents": 1000, "bid_cents": 1000}
+    # ...while the current week reflects the new edit.
+    current_grid = repo.preferences_by_chore()
+    assert current_grid[chore["id"]][roommate["id"]] == {"wtp_cents": 2000, "bid_cents": 2000}
+
+
+def test_preference_history_keeps_every_edit(fresh_db):
+    roommate = repo.active_roommates()[0]
+    chore = repo.active_recurring_chores()[0]
+    repo.save_preference(roommate["id"], chore["id"], 1000, 1000, created_at=repo.BASE_CREATED_AT)
+    repo.save_preference(roommate["id"], chore["id"], 2000, 2000)
+    history = repo.preference_history_by_chore()
+    entries = history[chore["id"]][roommate["id"]]
+    # Append-only: both edits are kept, oldest first.
+    assert [(e["wtp_cents"], e["bid_cents"]) for e in entries] == [(1000, 1000), (2000, 2000)]
 
 
 # --------------------------------------------------------------------------- #
@@ -387,8 +414,10 @@ def test_recurring_can_be_sold_to_roommate(fresh_db):
 
 
 def test_recurring_can_convert_to_one_off(fresh_db):
-    repo.spawn_week("2026-06-21")
-    instance = next(i for i in repo.all_instances() if not i["is_one_off"])
+    # Use the current week so a just-saved preference is effective for it.
+    week = repo.current_week().isoformat()
+    repo.spawn_week(week)
+    instance = next(i for i in repo.all_instances(week_start=week) if not i["is_one_off"])
     name = instance["name"]
     rms = repo.active_roommates()
     repo.save_preference(rms[0]["id"], instance["recurring_chore_id"], 1500, 900)
@@ -399,10 +428,11 @@ def test_recurring_can_convert_to_one_off(fresh_db):
     assert after["manual_override"] is False
     assert after["name"] == name  # name preserved
 
-    # The chore's wtp/bid are snapshotted onto the new one-off (unset -> 0/0).
+    # The chore's week-effective wtp/bid are snapshotted onto the new one-off
+    # (unset -> NULL/NULL, which the one-off computation treats the same way).
     snapshot = repo.preferences_by_instance()[instance["id"]]
     assert snapshot[rms[0]["id"]] == {"wtp_cents": 1500, "bid_cents": 900}
-    assert snapshot[rms[1]["id"]] == {"wtp_cents": 0, "bid_cents": 0}
+    assert snapshot[rms[1]["id"]] == {"wtp_cents": None, "bid_cents": None}
 
     # A one-off can't be re-converted to a one-off.
     with pytest.raises(ValueError):

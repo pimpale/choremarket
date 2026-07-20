@@ -60,13 +60,6 @@ export default function AdminPage({ bump }: { bump: () => void }) {
     bump();
   }
 
-  async function resetMockData() {
-    await api('/api/test/reset-mock-data', { method: 'POST' });
-    const next = await api('/api/roommates');
-    setData(next);
-    bump();
-  }
-
   return (
     <section className="panel">
       {error && <Alert variant="danger">{error}</Alert>}
@@ -102,9 +95,6 @@ export default function AdminPage({ bump }: { bump: () => void }) {
         <Button type="submit">Add Roommate</Button>
         <Button variant="outline-secondary" type="button" onClick={addExamples}>
           Load Examples
-        </Button>
-        <Button variant="outline-danger" type="button" onClick={resetMockData}>
-          Reset Mock Data
         </Button>
       </Form>
 

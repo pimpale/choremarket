@@ -3,7 +3,18 @@ import { Download, ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from 'rea
 import { Alert, Button, Form, Modal, ProgressBar, Tab, Table, Tabs } from 'react-bootstrap';
 
 import { api, cents, centsToDollars, dollarsToCents, paymentClass, useAsync } from '../lib/api';
-import { ledgerForInstance, membersForWeek, type InstanceLedger, type Mechanism, type Person, type RawInstance } from '../lib/mechanism';
+import {
+  DEFAULT_UNSET_BID_CENTS,
+  effectivePref,
+  ledgerForInstance,
+  membersForWeek,
+  type InstanceLedger,
+  type Mechanism,
+  type NullablePref,
+  type Person,
+  type PrefHistoryByChore,
+  type RawInstance,
+} from '../lib/mechanism';
 
 // Shortest prefix of each name that's still unique among the others, e.g.
 // ["Bob", "Rob", "Ronald"] -> ["B", "Rob", "Ron"].
@@ -70,7 +81,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   const allRoommates = data?.roommates || [];
   const roommates = allRoommates.filter((r: any) => r.active);
   const recurringChores = data?.recurring_chores || [];
-  const prefsByChore = data?.preferences_by_chore || {};
+  const prefHistory: PrefHistoryByChore = data?.preference_history_by_chore || {};
   const prefsByInstance = data?.preferences_by_instance || {};
   const mechanism: Mechanism = data?.mechanism || 'first-best';
   // Both Vickrey mechanisms share the second-price columns; they differ only in
@@ -102,7 +113,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   const ledgers = new Map<number, InstanceLedger>(
     instances.map((instance: any) => [
       instance.id,
-      ledgerForInstance(rawOf(instance), people, prefsByChore, mechanism, prefsByInstance),
+      ledgerForInstance(rawOf(instance), people, {}, mechanism, prefsByInstance, prefHistory),
     ]),
   );
   const ledgerOf = (instance: any): InstanceLedger =>
@@ -229,6 +240,30 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     bump();
   }
 
+  // Edit a recurring chore's wtp/bid straight from the ledger. The edit is
+  // appended stamped now, so it takes effect for the current week forward and
+  // leaves settled past weeks untouched. The untouched field is preserved at its
+  // currently-effective value.
+  async function saveRecurringPreference(
+    instance: any,
+    roommateId: number,
+    field: 'wtp_cents' | 'bid_cents',
+    value: string,
+  ) {
+    const current = recurringPref(instance, roommateId);
+    const next = await api('/api/ledger/recurring-preferences', {
+      method: 'PUT',
+      body: JSON.stringify({
+        recurring_chore_id: instance.recurring_chore_id,
+        roommate_id: roommateId,
+        wtp_cents: field === 'wtp_cents' ? (value.trim() ? dollarsToCents(value) : null) : current.wtp_cents,
+        bid_cents: field === 'bid_cents' ? (value.trim() ? dollarsToCents(value) : null) : current.bid_cents,
+      }),
+    });
+    setData(next);
+    bump();
+  }
+
   async function deleteInstance(id: number) {
     const next = await api(`/api/ledger/instances/${id}`, { method: 'DELETE' });
     setData(next);
@@ -323,7 +358,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
       const prefValues = roommates.flatMap((roommate: any) => {
         const pref = instance.is_one_off
           ? (prefsByInstance[instance.id] || {})[roommate.id]
-          : (prefsByChore[instance.recurring_chore_id] || {})[roommate.id];
+          : recurringPref(instance, roommate.id);
         if (instance.manual_override) return ['', ''];
         return [
           pref?.wtp_cents == null ? '' : cents(pref.wtp_cents),
@@ -414,19 +449,34 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   // plus the collapsible WTP/Bid and Mechanism blocks.
   const addColSpan = 6 + prefCols + mechCols;
 
-  // Reconstruct the per-roommate bids/WTP for the chore from the prefs grid,
-  // limited to the roommates who participate in this instance's week.
+  // A recurring chore's wtp/bid for a roommate as it was in force for this
+  // instance's week (resolved from the append-only edit log). Unset -> null/null.
+  function recurringPref(instance: any, roommateId: number): NullablePref {
+    return effectivePref((prefHistory[instance.recurring_chore_id] || {})[roommateId], instance.week_start);
+  }
+
+  // The wtp/bid the pricing uses for a roommate on an instance: the one-off's
+  // per-instance pref or the recurring chore's week-effective value, with unset
+  // values falling back to no WTP and a very large bid (so an un-bid roommate is
+  // never the cheapest), exactly the defaults the economics apply.
+  function pricingPref(instance: any, roommateId: number): { wtp: number; bid: number } {
+    const pref = instance.recurring_chore_id == null
+      ? (prefsByInstance[instance.id] || {})[roommateId]
+      : recurringPref(instance, roommateId);
+    return {
+      wtp: pref?.wtp_cents ?? 0,
+      bid: pref?.bid_cents ?? DEFAULT_UNSET_BID_CENTS,
+    };
+  }
+
+  // Reconstruct the per-roommate bids/WTP for the chore, limited to the
+  // roommates who participate in this instance's week.
   function choreFinancials(instance: any) {
-    const rawPrefs = instance.recurring_chore_id == null
-      ? prefsByInstance[instance.id] || {}
-      : prefsByChore[instance.recurring_chore_id] || {};
     const members = membersForWeek(people, instance.week_start);
-    const rows = members.map((r) => ({
-      id: r.id,
-      name: r.name,
-      wtp: rawPrefs[r.id]?.wtp_cents ?? 0,
-      bid: rawPrefs[r.id]?.bid_cents ?? (instance.recurring_chore_id == null ? 100_000_000 : 0),
-    }));
+    const rows = members.map((r) => {
+      const { wtp, bid } = pricingPref(instance, r.id);
+      return { id: r.id, name: r.name, wtp, bid };
+    });
     const totalWtp = rows.reduce((sum: number, p: any) => sum + p.wtp, 0);
     const byBid = [...rows].sort((a, b) => a.bid - b.bid);
     return { people: rows, totalWtp, byBid };
@@ -681,7 +731,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
               }
               const pref = instance.is_one_off
                 ? (prefsByInstance[instance.id] || {})[roommate.id]
-                : (prefsByChore[instance.recurring_chore_id] || {})[roommate.id];
+                : recurringPref(instance, roommate.id);
               if (instance.manual_override) {
                 return (
                   <Fragment key={roommate.id}>
@@ -722,10 +772,48 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
                   </Fragment>
                 );
               }
+              // Recurring bids are editable on the live (current/upcoming) weeks
+              // only; editing appends an edit effective now, so past weeks stay
+              // read-only and are never rewritten. Unset shows blank (the
+              // economics then treat it as no WTP and a very large bid).
+              if (instance.week_start >= data.current_week) {
+                return (
+                  <Fragment key={roommate.id}>
+                    <td className="num pref-cell pref-cell-start">
+                      <Form.Control
+                        key={`wtp-${pref?.wtp_cents ?? ''}`}
+                        className="sheet-input money-input pref-input"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="—"
+                        defaultValue={pref?.wtp_cents == null ? '' : centsToDollars(pref.wtp_cents)}
+                        onBlur={(event) =>
+                          saveRecurringPreference(instance, roommate.id, 'wtp_cents', event.currentTarget.value)
+                        }
+                      />
+                    </td>
+                    <td className="num pref-cell pref-cell-end">
+                      <Form.Control
+                        key={`bid-${pref?.bid_cents ?? ''}`}
+                        className="sheet-input money-input pref-input"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="—"
+                        defaultValue={pref?.bid_cents == null ? '' : centsToDollars(pref.bid_cents)}
+                        onBlur={(event) =>
+                          saveRecurringPreference(instance, roommate.id, 'bid_cents', event.currentTarget.value)
+                        }
+                      />
+                    </td>
+                  </Fragment>
+                );
+              }
               return (
                 <Fragment key={roommate.id}>
-                  <td className="num pref-cell pref-cell-start">{pref ? cents(pref.wtp_cents) : '—'}</td>
-                  <td className="num pref-cell pref-cell-end">{pref ? cents(pref.bid_cents) : '—'}</td>
+                  <td className="num pref-cell pref-cell-start">{pref?.wtp_cents == null ? '—' : cents(pref.wtp_cents)}</td>
+                  <td className="num pref-cell pref-cell-end">{pref?.bid_cents == null ? '—' : cents(pref.bid_cents)}</td>
                 </Fragment>
               );
             })}

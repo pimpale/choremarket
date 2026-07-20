@@ -3,11 +3,14 @@ import { describe, expect, it } from 'vitest';
 import {
   computeBalances,
   computeLedger,
+  DEFAULT_UNSET_BID_CENTS,
+  effectivePref,
   flatPayout,
   ledgerForInstance,
   membersForWeek,
   type Pref,
   type Person,
+  type PrefHistoryByChore,
   type RawInstance,
 } from './mechanism';
 
@@ -268,6 +271,53 @@ describe('membership windows', () => {
     // Nathan hadn't joined, so he carries no balance for that week.
     expect(b.nets.find((n) => n.id === 3)?.net_cents).toBe(0);
     expect(b.nets.reduce((s, n) => s + n.net_cents, 0)).toBe(0);
+  });
+});
+
+describe('recurring preference history (effective-dated, future-only)', () => {
+  // Alex: an original bid effective from the beginning of time, then an edit
+  // made on 2026-07-01. Blair never bids for this chore.
+  const history: PrefHistoryByChore = {
+    5: {
+      1: [
+        { created_at: '1970-01-01 00:00:00', wtp_cents: 1500, bid_cents: 900 },
+        { created_at: '2026-07-01 12:00:00', wtp_cents: 1500, bid_cents: 1300 },
+      ],
+    },
+  };
+
+  it('picks the latest edit that had landed by the end of the week', () => {
+    // Week ending before the edit still sees the original bid...
+    expect(effectivePref(history[5][1], '2026-06-21')).toEqual({ wtp_cents: 1500, bid_cents: 900 });
+    // ...and a week ending after the edit sees the new one.
+    expect(effectivePref(history[5][1], '2026-07-05')).toEqual({ wtp_cents: 1500, bid_cents: 1300 });
+  });
+
+  it('treats an unset recurring bid as a very large ask (never auto-assigned)', () => {
+    const base = { recurring_chore_id: 5, assignee_id: null, status: 'pending', payout_cents: 0 } as const;
+    // Blair (id 2) has no history entry; only Alex can be the doer.
+    const led = ledgerForInstance(
+      { ...base, id: 1, week_start: '2026-07-05' },
+      people,
+      {},
+      'first-best',
+      {},
+      history,
+    );
+    expect(led.assigneeId).toBe(1);
+  });
+
+  it('resolves each week from the value effective then (past weeks unchanged by later edits)', () => {
+    const base = { recurring_chore_id: 5, assignee_id: 1, status: 'done', payout_cents: 0 } as const;
+    const early = ledgerForInstance({ ...base, id: 1, week_start: '2026-06-21' }, people, {}, 'first-best', {}, history);
+    const late = ledgerForInstance({ ...base, id: 2, week_start: '2026-07-05' }, people, {}, 'first-best', {}, history);
+    // first-best pays the doer their own bid: 900 back then, 1300 after the edit.
+    expect(early.detail?.priceCents).toBe(900);
+    expect(late.detail?.priceCents).toBe(1300);
+  });
+
+  it('DEFAULT_UNSET_BID_CENTS is the shared one-off/recurring unset bid', () => {
+    expect(DEFAULT_UNSET_BID_CENTS).toBe(100_000_000);
   });
 });
 

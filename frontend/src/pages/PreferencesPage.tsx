@@ -24,8 +24,8 @@ export default function PreferencesPage({
           `${pref.roommate_id}:${pref.recurring_chore_id}`,
           {
             ...pref,
-            wtp_value: centsToDollars(pref.wtp_cents),
-            bid_value: centsToDollars(pref.bid_cents),
+            wtp_value: pref.wtp_cents == null ? '' : centsToDollars(pref.wtp_cents),
+            bid_value: pref.bid_cents == null ? '' : centsToDollars(pref.bid_cents),
           },
         ]),
       ),
@@ -46,13 +46,17 @@ export default function PreferencesPage({
   async function savePreference(roommateId: number, choreId: number) {
     const draft = drafts[`${roommateId}:${choreId}`] || {};
     setSaveState('Saving…');
+    // A blank field is left unset (null): the economics then treat an unset bid
+    // as a very large ask, so a roommate who never bid is never auto-assigned.
+    // Saving appends an edit stamped now, so it applies to the current week
+    // forward and never rewrites settled past weeks.
     await api('/api/preferences', {
       method: 'PUT',
       body: JSON.stringify({
         roommate_id: roommateId,
         recurring_chore_id: choreId,
-        wtp_cents: dollarsToCents(draft.wtp_value),
-        bid_cents: dollarsToCents(draft.bid_value),
+        wtp_cents: draft.wtp_value?.trim() ? dollarsToCents(draft.wtp_value) : null,
+        bid_cents: draft.bid_value?.trim() ? dollarsToCents(draft.bid_value) : null,
       }),
     });
     setSaveState('Saved');
@@ -88,7 +92,8 @@ export default function PreferencesPage({
                           type="number"
                           min="0"
                           step="0.01"
-                          value={draft.wtp_value ?? '0.00'}
+                          placeholder="—"
+                          value={draft.wtp_value ?? ''}
                           onChange={(event) => updateDraft(roommate.id, chore.id, 'wtp_value', event.target.value)}
                           onBlur={() => savePreference(roommate.id, chore.id)}
                         />
@@ -99,7 +104,8 @@ export default function PreferencesPage({
                           type="number"
                           min="0"
                           step="0.01"
-                          value={draft.bid_value ?? '0.00'}
+                          placeholder="—"
+                          value={draft.bid_value ?? ''}
                           onChange={(event) => updateDraft(roommate.id, chore.id, 'bid_value', event.target.value)}
                           onBlur={() => savePreference(roommate.id, chore.id)}
                         />

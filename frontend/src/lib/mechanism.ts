@@ -35,7 +35,59 @@ export interface NullablePref {
   bid_cents: number | null;
 }
 
-const DEFAULT_ONE_OFF_BID_CENTS = 100_000_000;
+// One entry in a recurring chore's append-only wtp/bid edit log: the value set
+// by an edit made at `created_at` (an ISO datetime).
+export interface TimedPref extends NullablePref {
+  created_at: string;
+}
+
+// recurring_chore_id -> roommate_id -> edit log (sorted by created_at asc).
+export type PrefHistoryByChore = Record<number, Record<number, TimedPref[]>>;
+
+// An unset bid (recurring or one-off) is treated as a very large ask, so a
+// roommate who never bid is never the cheapest and never auto-assigned.
+export const DEFAULT_UNSET_BID_CENTS = 100_000_000;
+
+// Add `days` to an ISO date, in UTC, so no timezone can shift the day across a
+// boundary. Used to turn a week's Sunday start into its Saturday end.
+function addDaysIso(iso: string, days: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+// The wtp/bid in force for the week starting `weekStart` from a single
+// (roommate, chore) edit log: the most recent edit that was made on or before
+// the end (Saturday) of that week. Unset -> null/null.
+export function effectivePref(entries: TimedPref[] | undefined, weekStart?: string): NullablePref {
+  if (!entries || !entries.length) return { wtp_cents: null, bid_cents: null };
+  const weekEnd = weekStart ? addDaysIso(weekStart, 6) : '9999-12-31';
+  let chosen: TimedPref | undefined;
+  for (const entry of [...entries].sort((a, b) => a.created_at.localeCompare(b.created_at))) {
+    if (entry.created_at.slice(0, 10) <= weekEnd) chosen = entry;
+    else break;
+  }
+  return chosen
+    ? { wtp_cents: chosen.wtp_cents, bid_cents: chosen.bid_cents }
+    : { wtp_cents: null, bid_cents: null };
+}
+
+// Resolve a whole chore's edit log into the concrete {roommate -> Pref} in force
+// for a week, filling unset values with the defaults (no WTP, a very large bid).
+function resolveChorePrefs(
+  history: Record<number, TimedPref[]>,
+  members: Person[],
+  weekStart?: string,
+): Record<number, Pref> {
+  const prefs: Record<number, Pref> = {};
+  for (const person of members) {
+    const eff = effectivePref(history[person.id], weekStart);
+    prefs[person.id] = {
+      wtp_cents: eff.wtp_cents ?? 0,
+      bid_cents: eff.bid_cents ?? DEFAULT_UNSET_BID_CENTS,
+    };
+  }
+  return prefs;
+}
 
 export interface Person {
   id: number;
@@ -323,13 +375,17 @@ export interface InstanceLedger extends Ledger {
   displayStatus: DisplayStatus;
 }
 
-// prefsByChore: recurring_chore_id -> roommate_id -> Pref
+// prefsByChore: recurring_chore_id -> roommate_id -> Pref (a single value per
+// chore). prefsHistoryByChore, when given, supersedes it for recurring chores:
+// each instance resolves the wtp/bid that was effective for *its own week*, so
+// past weeks reflect the value in force then and edits are future-only.
 export function ledgerForInstance(
   instance: RawInstance,
   people: Person[],
   prefsByChore: Record<number, Record<number, Pref>>,
   mechanism: Mechanism,
   prefsByInstance: Record<number, Record<number, NullablePref>> = {},
+  prefsHistoryByChore?: PrefHistoryByChore,
 ): InstanceLedger {
   // Only roommates whose membership covers this week take part in the chore.
   const members = membersForWeek(people, instance.week_start);
@@ -349,13 +405,15 @@ export function ledgerForInstance(
         person.id,
         {
           wtp_cents: rawPrefs[person.id]?.wtp_cents ?? 0,
-          bid_cents: rawPrefs[person.id]?.bid_cents ?? DEFAULT_ONE_OFF_BID_CENTS,
+          bid_cents: rawPrefs[person.id]?.bid_cents ?? DEFAULT_UNSET_BID_CENTS,
         },
       ]),
     );
     ledger = computeLedger(members, prefs, mechanism, instance.assignee_id, false, instance.id);
   } else {
-    const prefs = prefsByChore[instance.recurring_chore_id] ?? {};
+    const prefs = prefsHistoryByChore
+      ? resolveChorePrefs(prefsHistoryByChore[instance.recurring_chore_id] ?? {}, members, instance.week_start)
+      : prefsByChore[instance.recurring_chore_id] ?? {};
     ledger = computeLedger(members, prefs, mechanism, instance.assignee_id, true, instance.id);
   }
 
@@ -407,6 +465,7 @@ export function computeBalances(
   mechanism: Mechanism,
   prefsByInstance: Record<number, Record<number, NullablePref>> = {},
   recordedPayments: RecordedPayment[] = [],
+  prefsHistoryByChore?: PrefHistoryByChore,
 ): Balances {
   const net: Record<number, number> = {};
   for (const p of people) net[p.id] = 0;
@@ -414,7 +473,14 @@ export function computeBalances(
 
   for (const instance of instances) {
     if (instance.status !== 'done') continue;
-    const { payments } = ledgerForInstance(instance, people, prefsByChore, mechanism, prefsByInstance);
+    const { payments } = ledgerForInstance(
+      instance,
+      people,
+      prefsByChore,
+      mechanism,
+      prefsByInstance,
+      prefsHistoryByChore,
+    );
     for (const [id, amount] of Object.entries(payments)) {
       if (Number(id) in net) net[Number(id)] += amount;
       roommateTotal += amount;

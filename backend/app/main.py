@@ -81,8 +81,15 @@ class RecurringChorePayload(BaseModel):
 class PreferencePayload(BaseModel):
     roommate_id: int
     recurring_chore_id: int
-    wtp_cents: int
-    bid_cents: int
+    wtp_cents: int | None = None
+    bid_cents: int | None = None
+
+
+class RecurringPreferencePayload(BaseModel):
+    recurring_chore_id: int
+    roommate_id: int
+    wtp_cents: int | None = None
+    bid_cents: int | None = None
 
 
 class InstancePreferencePayload(BaseModel):
@@ -295,6 +302,8 @@ def api_preferences():
 
 @app.put("/api/preferences")
 def api_save_preference(payload: PreferencePayload):
+    # Appends an edit stamped now, so the change takes effect for the current
+    # week forward and settled past weeks keep whatever bid was in force then.
     repository.save_preference(
         payload.roommate_id,
         payload.recurring_chore_id,
@@ -319,7 +328,7 @@ def api_ledger(week_start: str | None = None, assignee_id: int | None = None):
         "recurring_chores": [
             row_to_dict(row) for row in repository.active_recurring_chores()
         ],
-        "preferences_by_chore": repository.preferences_by_chore(),
+        "preference_history_by_chore": repository.preference_history_by_chore(),
         "preferences_by_instance": repository.preferences_by_instance(),
         "recorded_payments": repository.list_roommate_payments(),
         "weeks": repository.known_instance_weeks(),
@@ -349,6 +358,20 @@ def api_save_instance_preference(payload: InstancePreferencePayload):
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
+    return api_ledger()
+
+
+@app.put("/api/ledger/recurring-preferences")
+def api_save_recurring_preference(payload: RecurringPreferencePayload):
+    # Edit a recurring chore's wtp/bid straight from the ledger. The edit is
+    # appended stamped now, so it applies to the current week forward and never
+    # rewrites settled past weeks.
+    repository.save_preference(
+        payload.roommate_id,
+        payload.recurring_chore_id,
+        payload.wtp_cents,
+        payload.bid_cents,
+    )
     return api_ledger()
 
 

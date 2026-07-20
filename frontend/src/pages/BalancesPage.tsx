@@ -36,10 +36,11 @@ export default function BalancesPage({ refreshToken }: { refreshToken: number })
   const { nets, settlements, houseCents } = computeBalances(
     instances,
     people,
-    data?.preferences_by_chore ?? {},
+    {},
     mechanism,
     data?.preferences_by_instance ?? {},
     recordedPayments,
+    data?.preference_history_by_chore ?? {},
   );
 
   // Every mechanism is exactly budget-balanced, so this is always $0.00; it is

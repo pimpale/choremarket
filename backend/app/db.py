@@ -63,15 +63,22 @@ def init_db() -> None:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
-            -- Week-independent WTP/bid preferences keyed by recurring chore.
+            -- Append-only WTP/bid edit log keyed by recurring chore. Every edit
+            -- inserts a new row stamped with when it was made (created_at); the
+            -- value in force for a given week is the most recent row whose edit
+            -- landed on or before the end of that week. So editing a bid changes
+            -- the current/future weeks but never rewrites settled past weeks, and
+            -- the full history is preserved. wtp/bid are nullable: an unset value
+            -- means "no preference", which the client treats as $0 WTP and a very
+            -- large bid (so an un-bid roommate is never auto-assigned), exactly
+            -- like one-offs.
             CREATE TABLE IF NOT EXISTS chore_preferences (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 roommate_id INTEGER NOT NULL REFERENCES roommates(id),
                 recurring_chore_id INTEGER NOT NULL REFERENCES recurring_chores(id),
-                wtp_cents INTEGER NOT NULL DEFAULT 0,
-                bid_cents INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(roommate_id, recurring_chore_id)
+                wtp_cents INTEGER,
+                bid_cents INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
             -- The ledger rows: one concrete instance of a chore for a given week.
@@ -118,8 +125,38 @@ def init_db() -> None:
             INSERT OR IGNORE INTO app_settings (key, value) VALUES ('mechanism', 'first-best');
             """
         )
+        _migrate_chore_preferences(conn)
         seed_recurring_chores(conn)
         seed_roommates(conn)
+
+
+# Older databases (e.g. a Railway volume) still have the week-independent
+# single-value schema (a UNIQUE (roommate, chore) row with updated_at, no
+# created_at). ``CREATE TABLE IF NOT EXISTS`` won't alter them, so rebuild the
+# table into the append-only edit-log shape, backdating every existing preference
+# to the beginning of time so it keeps applying to all past weeks.
+def _migrate_chore_preferences(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(chore_preferences)")}
+    if not columns or "created_at" in columns:
+        return
+    conn.executescript(
+        """
+        ALTER TABLE chore_preferences RENAME TO chore_preferences_old;
+        CREATE TABLE chore_preferences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            roommate_id INTEGER NOT NULL REFERENCES roommates(id),
+            recurring_chore_id INTEGER NOT NULL REFERENCES recurring_chores(id),
+            wtp_cents INTEGER,
+            bid_cents INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO chore_preferences
+            (id, roommate_id, recurring_chore_id, wtp_cents, bid_cents, created_at)
+        SELECT id, roommate_id, recurring_chore_id, wtp_cents, bid_cents, '1970-01-01 00:00:00'
+        FROM chore_preferences_old;
+        DROP TABLE chore_preferences_old;
+        """
+    )
 
 
 def seed_recurring_chores(conn: sqlite3.Connection) -> None:
