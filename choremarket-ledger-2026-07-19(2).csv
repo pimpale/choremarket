@@ -1,0 +1,77 @@
+Week,Due,Chore,Description,Type,Assignee,Transfer,Status,Done,Failed,Blaine WTP,Blaine Bid,Emerson WTP,Emerson Bid,Govind WTP,Govind Bid,Matthew WTP,Matthew Bid,Nathan WTP,Nathan Bid
+2026-05-24,2026-05-30,Clean kitchen sink,Scrub and clean the kitchen sink,recurring,,,done,yes,,,,,,,,,,,
+2026-05-24,2026-05-30,Clean microwave,Wipe down the microwave inside and out,recurring,Matthew,$12.75,failed,,yes,$1.00,$30.00,$14.00,$20.00,$11.00,$17.00,$1.00,$12.00,$12.50,$17.50
+2026-05-24,2026-05-30,Kitchen surfaces,"Wipe counters, stove, and dining table",recurring,,,done,yes,,,,,,,,,,,
+2026-05-24,2026-05-30,Monday Trash,Take out Monday trash,recurring,Govind,$12.00,done,yes,,$10.00,$50.00,$12.00,$16.00,$50.00,$13.00,$1.00,$28.00,$10.50,$13.50
+2026-05-24,2026-05-30,Putting away dishes,Empty and reload the dishwasher as needed,recurring,,,done,yes,,,,,,,,,,,
+2026-05-24,2026-05-30,Thursday Trash + Recycle,Take out Thursday trash and recycling,recurring,,,done,yes,,,,,,,,,,,
+2026-05-24,2026-05-30,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs,recurring,Govind,$18.00,done,yes,,$4.00,$50.00,$16.00,$24.00,$13.00,$21.00,$1.00,$35.00,$14.50,$21.50
+2026-05-31,2026-06-06,Clean kitchen sink,Scrub and clean the kitchen sink,recurring,,,done,yes,,,,,,,,,,,
+2026-05-31,2026-06-06,Clean microwave,Wipe down the microwave inside and out,recurring,Matthew,$12.75,done,yes,,$1.00,$30.00,$14.00,$20.00,$11.00,$17.00,$1.00,$12.00,$12.50,$17.50
+2026-05-31,2026-06-06,Kitchen surfaces,"Wipe counters, stove, and dining table",recurring,,,done,yes,,,,,,,,,,,
+2026-05-31,2026-06-06,Monday Trash,Take out Monday trash,recurring,Govind,$12.00,done,yes,,$10.00,$50.00,$12.00,$16.00,$50.00,$13.00,$1.00,$28.00,$10.50,$13.50
+2026-05-31,2026-06-06,Putting away dishes,Empty and reload the dishwasher as needed,recurring,,,done,yes,,,,,,,,,,,
+2026-05-31,2026-06-06,Thursday Trash + Recycle,Take out Thursday trash and recycling,recurring,,,done,yes,,,,,,,,,,,
+2026-05-31,2026-06-06,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs,recurring,Govind,$18.00,done,yes,,$4.00,$50.00,$16.00,$24.00,$13.00,$21.00,$1.00,$35.00,$14.50,$21.50
+2026-06-07,2026-06-13,Clean kitchen sink,Scrub and clean the kitchen sink,recurring,,,done,yes,,,,,,,,,,,
+2026-06-07,2026-06-13,Clean microwave,Wipe down the microwave inside and out,recurring,Matthew,$13.60,done,yes,,$1.00,$30.00,$14.00,$20.00,$11.00,$17.00,$1.00,$12.00,$12.50,$17.50
+2026-06-07,2026-06-13,Kitchen surfaces,"Wipe counters, stove, and dining table",recurring,,,done,yes,,,,,,,,,,,
+2026-06-07,2026-06-13,Monday Trash,Take out Monday trash,recurring,Govind,$10.80,done,yes,,$10.00,$50.00,$12.00,$16.00,$50.00,$13.00,$1.00,$28.00,$10.50,$13.50
+2026-06-07,2026-06-13,Putting away dishes,Empty and reload the dishwasher as needed,recurring,,,done,yes,,,,,,,,,,,
+2026-06-07,2026-06-13,Thursday Trash + Recycle,Take out Thursday trash and recycling,recurring,,,done,yes,,,,,,,,,,,
+2026-06-07,2026-06-13,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs,recurring,Govind,$17.20,done,yes,,$4.00,$50.00,$16.00,$24.00,$13.00,$21.00,$1.00,$35.00,$14.50,$21.50
+2026-06-14,2026-06-20,Clean kitchen sink,Scrub and clean the kitchen sink,recurring,,,skipped,,,,,,,,,,,,
+2026-06-14,2026-06-20,Clean microwave,Wipe down the microwave inside and out,recurring,Matthew,$13.60,pending,,,$1.00,$30.00,$14.00,$20.00,$11.00,$17.00,$1.00,$12.00,$12.50,$17.50
+2026-06-14,2026-06-20,Kitchen surfaces,"Wipe counters, stove, and dining table",recurring,,,skipped,,,,,,,,,,,,
+2026-06-14,2026-06-20,Monday Trash,Take out Monday trash,recurring,Govind,$10.80,pending,,,$10.00,$50.00,$12.00,$16.00,$50.00,$13.00,$1.00,$28.00,$10.50,$13.50
+2026-06-14,2026-06-20,Putting away dishes,Empty and reload the dishwasher as needed,recurring,,,skipped,,,,,,,,,,,,
+2026-06-14,2026-06-20,Thursday Trash + Recycle,Take out Thursday trash and recycling,recurring,,,skipped,,,,,,,,,,,,
+2026-06-14,2026-06-20,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs,recurring,Govind,$17.20,pending,,,$4.00,$50.00,$16.00,$24.00,$13.00,$21.00,$1.00,$35.00,$14.50,$21.50
+2026-06-14,2026-06-20,Assemble new bookshelf,One-off: build the hallway bookshelf,manual override,Blaine,$25.00,pending,,,,,,,,,,,,
+2026-06-21,2026-06-27,Clean kitchen sink,Scrub and clean the kitchen sink,recurring,,,skipped,,,,,,,,,,,,
+2026-06-21,2026-06-27,Clean microwave,Wipe down the microwave inside and out,recurring,Matthew,$13.60,pending,,,$1.00,$30.00,$14.00,$20.00,$11.00,$17.00,$1.00,$12.00,$12.50,$17.50
+2026-06-21,2026-06-27,Kitchen surfaces,"Wipe counters, stove, and dining table",recurring,,,skipped,,,,,,,,,,,,
+2026-06-21,2026-06-27,Monday Trash,Take out Monday trash,recurring,Govind,$10.80,pending,,,$10.00,$50.00,$12.00,$16.00,$50.00,$13.00,$1.00,$28.00,$10.50,$13.50
+2026-06-21,2026-06-27,Putting away dishes,Empty and reload the dishwasher as needed,recurring,,,skipped,,,,,,,,,,,,
+2026-06-21,2026-06-27,Thursday Trash + Recycle,Take out Thursday trash and recycling,recurring,,,skipped,,,,,,,,,,,,
+2026-06-21,2026-06-27,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs,one-off,Matthew,$14.80,pending,,,$14.50,$18.50,$16.00,$24.00,$20.00,$21.00,$13.00,$16.00,$14.50,$21.50
+2026-06-21,2026-06-27,,,one-off,,,skipped,,,,,,,,,,,,
+2026-06-28,2026-07-04,Clean kitchen sink,Scrub and clean the kitchen sink,recurring,,,skipped,,,,,,,,,,,,
+2026-06-28,2026-07-04,Clean microwave,Wipe down the microwave inside and out,recurring,Matthew,$13.60,pending,,,$1.00,$30.00,$14.00,$20.00,$11.00,$17.00,$1.00,$12.00,$12.50,$17.50
+2026-06-28,2026-07-04,Kitchen surfaces,"Wipe counters, stove, and dining table",recurring,,,skipped,,,,,,,,,,,,
+2026-06-28,2026-07-04,Monday Trash,Take out Monday trash,recurring,Govind,$10.80,pending,,,$10.00,$50.00,$12.00,$16.00,$50.00,$13.00,$1.00,$28.00,$10.50,$13.50
+2026-06-28,2026-07-04,Putting away dishes,Empty and reload the dishwasher as needed,recurring,,,skipped,,,,,,,,,,,,
+2026-06-28,2026-07-04,Thursday Trash + Recycle,Take out Thursday trash and recycling,recurring,,,skipped,,,,,,,,,,,,
+2026-06-28,2026-07-04,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs,recurring,Govind,$17.20,pending,,,$4.00,$50.00,$16.00,$24.00,$13.00,$21.00,$1.00,$35.00,$14.50,$21.50
+2026-07-05,2026-07-11,Clean kitchen sink,Scrub and clean the kitchen sink,recurring,,,skipped,,,,,,,,,,,,
+2026-07-05,2026-07-11,Clean microwave,Wipe down the microwave inside and out,recurring,Matthew,$13.60,pending,,,$1.00,$30.00,$14.00,$20.00,$11.00,$17.00,$1.00,$12.00,$12.50,$17.50
+2026-07-05,2026-07-11,Kitchen surfaces,"Wipe counters, stove, and dining table",recurring,,,skipped,,,,,,,,,,,,
+2026-07-05,2026-07-11,Monday Trash,Take out Monday trash,recurring,Govind,$10.80,pending,,,$10.00,$50.00,$12.00,$16.00,$50.00,$13.00,$1.00,$28.00,$10.50,$13.50
+2026-07-05,2026-07-11,Putting away dishes,Empty and reload the dishwasher as needed,recurring,,,skipped,,,,,,,,,,,,
+2026-07-05,2026-07-11,Thursday Trash + Recycle,Take out Thursday trash and recycling,recurring,,,skipped,,,,,,,,,,,,
+2026-07-05,2026-07-11,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs,recurring,Govind,$17.20,pending,,,$4.00,$50.00,$16.00,$24.00,$13.00,$21.00,$1.00,$35.00,$14.50,$21.50
+2026-07-12,2026-07-18,Clean kitchen sink,Scrub and clean the kitchen sink,recurring,,,skipped,,,,,,,,,,,,
+2026-07-12,2026-07-18,Clean microwave,Wipe down the microwave inside and out,recurring,Matthew,$13.60,pending,,,$1.00,$30.00,$14.00,$20.00,$11.00,$17.00,$1.00,$12.00,$12.50,$17.50
+2026-07-12,2026-07-18,Kitchen surfaces,"Wipe counters, stove, and dining table",recurring,,,skipped,,,,,,,,,,,,
+2026-07-12,2026-07-18,Monday Trash,Take out Monday trash,recurring,Govind,$10.80,done,yes,,$10.00,$50.00,$12.00,$16.00,$50.00,$13.00,$1.00,$28.00,$10.50,$13.50
+2026-07-12,2026-07-18,Putting away dishes,Empty and reload the dishwasher as needed,recurring,,,skipped,,,,,,,,,,,,
+2026-07-12,2026-07-18,Thursday Trash + Recycle,Take out Thursday trash and recycling,recurring,,,done,yes,,,,,,,,,,,
+2026-07-12,2026-07-18,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs,recurring,Govind,$17.20,pending,,,$4.00,$50.00,$16.00,$24.00,$13.00,$21.00,$1.00,$35.00,$14.50,$21.50
+2026-07-19,2026-07-25,Clean microwave,Wipe down the microwave inside and out,recurring,Govind,$8.00,pending,,,$1.00,$30.00,$4.00,$19.00,$11.00,$8.00,$4.00,$12.00,$15.00,$10.00
+2026-07-19,2026-07-25,Kitchen surfaces,"Wipe counters, stove, and dining table",recurring,,,skipped,,,,,,,,,,,,
+2026-07-19,2026-07-25,Monday Trash,Take out Monday trash,recurring,Emerson,$16.00,pending,,,$10.00,$50.00,$30.00,$19.00,$50.00,$20.00,$4.00,$28.00,$50.00,$20.00
+2026-07-19,2026-07-25,Thursday Trash + Recycle,Take out Thursday trash and recycling,recurring,,,skipped,,,,,,,,,,,,
+2026-07-19,2026-07-25,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs,recurring,Govind,$19.20,pending,,,$4.00,$50.00,$2.00,$24.00,$13.00,$21.00,$8.00,$35.00,$30.00,$25.00
+2026-07-19,2026-07-25,fix table,,one-off,,,skipped,,,,,,,$5.00,$25.00,,,$2.00,$13.00
+2026-07-19,2026-07-25,,,one-off,,,skipped,,,,,,,,,,,,
+2026-07-19,2026-07-25,Fix chinesium table,,one-off,,,skipped,,,,,,,,,,,,
+2026-07-19,2026-07-25,,,one-off,,,skipped,,,,,,,,,,,,
+2026-07-19,2026-07-25,,,one-off,,,skipped,,,,,,,,,,,,
+2026-07-26,2026-08-01,Clean downstairs bathroom,,recurring,Matthew,$12.00,pending,,,$5.00,$300.00,$10.00,$29.00,$10.00,$20.00,$10.00,$14.00,$30.00,$15.00
+2026-07-26,2026-08-01,Clean microwave + kitchen sink,Wipe down the microwave inside and out,recurring,Govind,$8.00,pending,,,$1.00,$30.00,$4.00,$19.00,$11.00,$8.00,$4.00,$12.00,$15.00,$10.00
+2026-07-26,2026-08-01,Clean table and kitchen surfaces,Clear surfaces and wipe down,recurring,Govind,$9.60,pending,,,$5.00,$50.00,$3.00,$29.00,$5.00,$12.00,$10.00,$20.00,$15.00,$12.00
+2026-07-26,2026-08-01,Dishes,put away dishes. Load dishwasher if dishes are accumulated on counter.,recurring,Govind,$20.00,pending,,,$8.00,$50.00,$5.00,$49.00,$50.00,$20.00,$20.00,$40.00,$35.00,$25.00
+2026-07-26,2026-08-01,Monday + Th Trash + Recycle,"Take out Monday trash, Take out Th trash + Recycle",recurring,Emerson,$16.00,pending,,,$10.00,$50.00,$30.00,$19.00,$50.00,$20.00,$4.00,$28.00,$50.00,$20.00
+2026-07-26,2026-08-01,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs,recurring,Govind,$19.20,pending,,,$4.00,$50.00,$2.00,$24.00,$13.00,$21.00,$8.00,$35.00,$30.00,$25.00
+2026-07-26,2026-08-01,clean middle floor bathroom,,recurring,Matthew,$16.00,pending,,,$5.00,$999.00,$0.00,$999.00,$10.00,$30.00,$20.00,$20.00,$10.00,$20.00
+2026-07-26,2026-08-01,clean top floor bathroom,,recurring,Emerson,$16.00,pending,,,$5.00,$999.00,$15.00,$18.55,$0.00,$30.00,$30.00,$30.00,$25.00,$20.00

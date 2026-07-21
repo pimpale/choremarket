@@ -33,7 +33,7 @@ export default function BalancesPage({ refreshToken }: { refreshToken: number })
 
   // Balances are solved entirely on the client from the raw instances, prefs, and
   // recorded settle-up payments.
-  const { nets, settlements, houseCents } = computeBalances(
+  const { nets, settlements } = computeBalances(
     instances,
     people,
     {},
@@ -42,10 +42,6 @@ export default function BalancesPage({ refreshToken }: { refreshToken: number })
     recordedPayments,
     data?.preference_history_by_chore ?? {},
   );
-
-  // Every mechanism is exactly budget-balanced, so this is always $0.00; it is
-  // displayed as a conservation check.
-  const houseLabel = houseCents > 0 ? 'deficit' : houseCents < 0 ? 'surplus' : 'balanced';
 
   async function recordPayment(event: React.FormEvent) {
     event.preventDefault();
@@ -81,18 +77,11 @@ export default function BalancesPage({ refreshToken }: { refreshToken: number })
     <section className="panel">
       <Tabs defaultActiveKey="balances" className="mb-3">
         <Tab eventKey="balances" title="Balances">
-          <div className="house-account">
-            <div className="house-account-main">
-              <span className="house-account-title">House account</span>
-              <span className={`house-account-amount ${paymentClass(houseCents)}`}>{cents(houseCents)}</span>
-              <span className="house-account-label">{houseLabel}</span>
-            </div>
-            <p className="house-account-note">
-              Mechanism: <strong>{mechanism}</strong>. Every mechanism is exactly budget-balanced — each
-              chore’s transfers sum to zero — so the house account is always $0.00 (anything else indicates a
-              bug). Net balances already fold in recorded settle-up payments.
-            </p>
-          </div>
+          <p className="status-text mb-3">
+            Mechanism: <strong>{mechanism}</strong>. Every mechanism is exactly budget-balanced — each
+            chore’s transfers sum to zero, so money only ever moves between roommates. Net balances
+            already fold in recorded settle-up payments.
+          </p>
 
           <Row className="g-4">
             <Col lg={6}>

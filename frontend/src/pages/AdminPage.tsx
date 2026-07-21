@@ -4,13 +4,14 @@ import { Alert, Badge, Button, ButtonGroup, Form, Table, ToggleButton } from 're
 import { api, useAsync } from '../lib/api';
 
 // All three mechanisms are exactly budget-balanced (every chore's transfers sum
-// to zero — no house account), and all finance the doer by an equal per-head
-// split of a single price. They differ in how the price is set and who decides
+// to zero — no house account), and all pay the doer a single price in full,
+// financed by an equal split among the other roommates — the doer never pays a
+// share of their own price. They differ in how the price is set and who decides
 // whether the chore happens at all.
 const MECHANISMS = [
-  { value: 'first-best', label: 'First-Best', hint: 'Equal split + first-best: the lowest bidder does the chore whenever total WTP covers their bid, is paid their own bid, and everyone (doer included) chips in an equal share of it. Maximizes reported surplus — the efficiency benchmark — but not strategyproof: the doer profits by inflating their bid, and inflated WTP sways the go/no-go decision.' },
-  { value: 'vickrey-majority', label: 'Vickrey + Majority', hint: 'Equal split + Vickrey + majority: the lowest bidder does the chore but is paid the second-lowest bid, so bidding your true cost is dominant on the supply side. The chore happens only if a strict majority’s WTP covers their equal share of that price — nobody can be dragged into funding something a majority doesn’t accept, but a cheap chore a minority loves can be voted down.' },
-  { value: 'vickrey-faltings', label: 'Vickrey + FaltingsFair', hint: 'Equal split + Vickrey + FaltingsFair: the doer is again paid the second-lowest bid. The go/no-go decision is delegated to a “jury” of everyone except one roommate (drawn per chore instance), with zero-sum fairness side-payments keeping the vote truthful. Since money only moves when a chore happens, those side-payments are scaled by n/k (k = juries that would fund) so their expectation is unchanged — audited to be exactly as incentive-compatible as paying them unconditionally. The cost: with 1/n probability the decision ignores your WTP.' },
+  { value: 'first-best', label: 'First-Best', hint: 'First-best: the lowest bidder does the chore whenever total WTP covers their bid and is paid their own bid in full, financed by an equal split among the other roommates. Maximizes reported surplus — the efficiency benchmark — but not strategyproof: the doer profits by inflating their bid, and inflated WTP sways the go/no-go decision.' },
+  { value: 'vickrey-majority', label: 'Vickrey + Majority', hint: 'Vickrey + majority: the lowest bidder does the chore but is paid the second-lowest bid (split among the others), so bidding your true cost is dominant on the supply side. The chore happens only if a strict majority’s WTP covers a 1/n per-head share of that price — nobody can be dragged into funding something a majority doesn’t accept, but a cheap chore a minority loves can be voted down.' },
+  { value: 'vickrey-faltings', label: 'Vickrey + FaltingsFair', hint: 'Vickrey + FaltingsFair: the doer is again paid the second-lowest bid, split among the others. The go/no-go decision is delegated to a “jury” of everyone except one roommate (drawn per chore instance), with zero-sum fairness side-payments keeping the vote truthful — shown separately from the chore money in the ledger. Since money only moves when a chore happens, those side-payments are scaled by n/k (k = juries that would fund) so their expectation is unchanged — audited to be exactly as incentive-compatible as paying them unconditionally. The cost: with 1/n probability the decision ignores your WTP.' },
 ];
 
 export default function AdminPage({ bump }: { bump: () => void }) {

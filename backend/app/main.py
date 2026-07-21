@@ -90,6 +90,9 @@ class RecurringPreferencePayload(BaseModel):
     roommate_id: int
     wtp_cents: int | None = None
     bid_cents: int | None = None
+    # The week of the ledger row the edit was made on; the edit takes effect
+    # for that week and forward.
+    week_start: str | None = None
 
 
 class InstancePreferencePayload(BaseModel):
@@ -364,13 +367,24 @@ def api_save_instance_preference(payload: InstancePreferencePayload):
 @app.put("/api/ledger/recurring-preferences")
 def api_save_recurring_preference(payload: RecurringPreferencePayload):
     # Edit a recurring chore's wtp/bid straight from the ledger. The edit is
-    # appended stamped now, so it applies to the current week forward and never
-    # rewrites settled past weeks.
+    # scoped to the week of the row it was made on: an edit on a live week's row
+    # is stamped now (repricing that week and forward), while an edit on a
+    # future week's row is stamped at that week's start, so it never leaks back
+    # into the current week. Settled past weeks are never rewritten.
+    created_at = None
+    if payload.week_start:
+        try:
+            week = repository.week_from_string(payload.week_start)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid week_start")
+        if week > date.today().isoformat():
+            created_at = f"{week} 00:00:00"
     repository.save_preference(
         payload.roommate_id,
         payload.recurring_chore_id,
         payload.wtp_cents,
         payload.bid_cents,
+        created_at=created_at,
     )
     return api_ledger()
 

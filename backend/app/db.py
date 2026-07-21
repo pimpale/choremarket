@@ -40,7 +40,7 @@ def init_db() -> None:
             );
 
             -- Recorded settle-up payments between roommates (A pays B). These
-            -- adjust the net balance without touching the house/chore ledger.
+            -- adjust the net balance without touching the chore ledger.
             CREATE TABLE IF NOT EXISTS roommate_payments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 from_roommate_id INTEGER NOT NULL REFERENCES roommates(id),

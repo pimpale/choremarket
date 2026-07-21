@@ -192,7 +192,10 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
 
   function openRecurringModal(instance: any) {
     const ledger = ledgerOf(instance);
-    const currentPrice = ledger.assigneeId == null ? 0 : -(ledger.payments[ledger.assigneeId] ?? 0);
+    // The mechanism price the doer is paid for the chore itself (excluding any
+    // FaltingsFair incentive side-payments).
+    const chorePayments = ledger.chorePaymentsCents ?? ledger.payments;
+    const currentPrice = ledger.assigneeId == null ? 0 : -(chorePayments[ledger.assigneeId] ?? 0);
     setRecurringModal({
       kind: 'recurring',
       activeKey: 'sell',
@@ -241,8 +244,10 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
   }
 
   // Edit a recurring chore's wtp/bid straight from the ledger. The edit is
-  // appended stamped now, so it takes effect for the current week forward and
-  // leaves settled past weeks untouched. The untouched field is preserved at its
+  // scoped to the week of the row it was made on: it takes effect for that week
+  // and forward, so editing the upcoming week's row never reprices the current
+  // week, and editing the current week's row reprices it immediately. Settled
+  // past weeks are never touched. The untouched field is preserved at its
   // currently-effective value.
   async function saveRecurringPreference(
     instance: any,
@@ -256,6 +261,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
       body: JSON.stringify({
         recurring_chore_id: instance.recurring_chore_id,
         roommate_id: roommateId,
+        week_start: instance.week_start,
         wtp_cents: field === 'wtp_cents' ? (value.trim() ? dollarsToCents(value) : null) : current.wtp_cents,
         bid_cents: field === 'bid_cents' ? (value.trim() ? dollarsToCents(value) : null) : current.bid_cents,
       }),
@@ -413,10 +419,17 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     : 1;
   // Shared prefix: the raw inputs. The Vickrey mechanisms then show the
   // second-price block plus their funding decision (majority vote or the
-  // FaltingsFair jury draw); first-best shows the equal split of the doer's
-  // own bid. All end with the per-roommate zero-sum transfers.
+  // FaltingsFair jury draw); first-best shows the split of the doer's own bid.
+  // All end with the per-roommate zero-sum transfers -- which FaltingsFair
+  // shows as two separate groups: the real money financing the chore, and the
+  // zero-sum fairness incentive payments from the jury draw.
+  const isFaltings = mechanism === 'vickrey-faltings';
   const transferColumns = roommates.map((roommate: any) => ({
     key: `transfer-${roommate.id}`,
+    label: roommate.name,
+  }));
+  const incentiveColumns = roommates.map((roommate: any) => ({
+    key: `incentive-${roommate.id}`,
     label: roommate.name,
   }));
   const mechanismColumns = [
@@ -426,13 +439,14 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     ...(isVickrey
       ? [
           { key: 'second-lowest', label: '2nd bid' },
-          { key: 'per-head', label: 'Per head' },
+          { key: 'per-head', label: 'Per payer' },
           mechanism === 'vickrey-majority'
             ? { key: 'support', label: 'Support' }
             : { key: 'excluded', label: 'Jury draw' },
         ]
-      : [{ key: 'per-head', label: 'Per head' }]),
+      : [{ key: 'per-head', label: 'Per payer' }]),
     ...transferColumns,
+    ...(isFaltings ? incentiveColumns : []),
   ];
   const mechanismGroups = [
     { label: 'Inputs', colSpan: 3 },
@@ -442,7 +456,14 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
           { label: mechanism === 'vickrey-majority' ? 'Vote' : 'Fair draw', colSpan: 1 },
         ]
       : [{ label: 'Equal split', colSpan: 1 }]),
-    ...(roommates.length ? [{ label: 'Transfers', colSpan: roommates.length }] : []),
+    ...(roommates.length
+      ? isFaltings
+        ? [
+            { label: 'Chore payments', colSpan: roommates.length },
+            { label: 'Incentive payments', colSpan: roommates.length },
+          ]
+        : [{ label: 'Transfers', colSpan: roommates.length }]
+      : []),
   ];
   const mechCols = showMech ? mechanismColumns.length : 1;
   // Fixed data columns (Due, Chore, Transfer, Done, Failed, delete),
@@ -546,7 +567,6 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
 
     const { totalWtp, byBid, people: choreMembers } = choreFinancials(instance);
     const lowest = byBid[0];
-    const paymentOf = (id: number) => ledger.payments[id] ?? 0;
     const detail = ledger.detail;
     const memberCount = choreMembers.length;
 
@@ -559,7 +579,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         return mechValueCell('support', `${detail.supporters} of ${memberCount}`, {
           subLabel: `need ${detail.required}`,
           valueClass: funded ? 'receive' : 'pay',
-          tip: 'How many roommates’ WTP covers the per-head share. The chore happens only with a strict majority — nobody can be dragged into funding something most don’t accept.',
+          tip: `How many roommates’ WTP covers the per-head share (${cents(detail.shareCents)} — the funding test). The chore happens only with a strict majority — nobody can be dragged into funding something most don’t accept.`,
         });
       }
       const excludedName = detail.excludedId != null ? nameById.get(detail.excludedId) ?? detail.excludedId : '—';
@@ -567,7 +587,7 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         partyLabel: 'excluded',
         subLabel: detail.juryFunds ? 'jury funds' : 'jury declines',
         valueClass: detail.juryFunds ? 'receive' : 'pay',
-        tip: 'FaltingsFair: one roommate (drawn per chore) sits out of the go/no-go decision; the rest are the jury. The excluded roommate is compensated by zero-sum fairness side-payments folded into the transfers, which keeps everyone truthful.',
+        tip: 'FaltingsFair: one roommate (drawn per chore) sits out of the go/no-go decision; the rest are the jury. The excluded roommate is compensated by the zero-sum fairness side-payments shown in the Incentive payments columns, which keeps everyone truthful.',
       });
     };
 
@@ -581,8 +601,8 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
               tip: 'The Vickrey price: the doer is paid the second-lowest bid, not their own. Undercutting rivals never changes your pay, so bidding your true cost is dominant.',
             }),
             mechValueCell('per-head', cents(detail.shareCents), {
-              partyLabel: `× ${memberCount}`,
-              tip: 'Each roommate’s equal share financing the doer’s pay: the Vickrey price split evenly. Shares exactly cover the price, so the transfers sum to $0.',
+              partyLabel: `× ${memberCount - 1}`,
+              tip: 'Each of the other roommates’ equal share financing the doer’s pay: the Vickrey price split across everyone but the doer, who never pays their own price. Shares exactly cover the price, so the transfers sum to $0.',
             }),
           ];
 
@@ -611,21 +631,29 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
     }
 
     const doer = byBid.find((p: any) => p.id === ledger.assigneeId) ?? lowest;
-    const transferTip = (roommateId: number) => {
-      if (mechanism === 'vickrey-faltings') {
-        const adjustment = Math.round(detail?.fairAdjustmentCents?.[roommateId] ?? 0);
-        return (
-          'Net transfer (positive pays, negative receives — shown green as positive): the equal per-head share, ' +
-          `minus the Vickrey price for the doer, plus this roommate’s zero-sum fairness side-payment for the jury draw (${cents(adjustment)} received here — ` +
-          `scaled up ×${detail?.fundingJuries ? `${memberCount}/${detail.fundingJuries}` : '1'} because it only settles when the draw funds, keeping incentives exact in expectation). All transfers sum to $0.`
-        );
-      }
-      return (
-        'Net transfer (positive pays, negative receives — shown green as positive): everyone chips in the equal per-head share and the doer nets the ' +
+    const choreTip = isFaltings
+      ? 'The actual money for the chore itself (positive pays, negative receives — shown green as positive): each of the other roommates chips in an equal share of the Vickrey price and the doer receives it in full, never paying their own price. These sum to $0.'
+      : 'Net transfer (positive pays, negative receives — shown green as positive): the other roommates chip in an equal share and the doer receives the ' +
         (mechanism === 'first-best' ? 'own-bid price' : 'Vickrey price') +
-        ' minus their own share. All transfers sum to $0.'
-      );
-    };
+        ' in full — the doer never pays their own price. All transfers sum to $0.';
+    const incentiveTip =
+      'The zero-sum FaltingsFair incentive side-payment for the jury draw: compensation for the excluded roommate that keeps WTP reports truthful ' +
+      `(scaled up ×${detail?.fundingJuries ? `${memberCount}/${detail.fundingJuries}` : '1'} because it only settles when the draw funds, keeping incentives exact in expectation). ` +
+      'These sum to $0 and add to the chore payments to give each roommate’s net transfer.';
+    const paymentCells = (prefix: string, amounts: Record<number, number>, tip: string) =>
+      roommates.map((roommate: any) => {
+        const amount = amounts[roommate.id] ?? 0;
+        const receives = amount < 0;
+        const displayAmount = receives ? -amount : amount;
+        return mechValueCell(`${prefix}-${roommate.id}`, cents(displayAmount), {
+          partyLabel:
+            amount === 0
+              ? roommate.name
+              : `${receives ? 'to' : 'from'} ${roommate.name}`,
+          valueClass: paymentClass(amount),
+          tip,
+        });
+      });
     return [
       mechValueCell('total-wtp', cents(totalWtp), { tip: wtpTip, start: true }),
       mechValueCell('lowest-bid', cents(doer.bid), { partyLabel: `from ${doer.name}`, tip: lowestBidTip }),
@@ -637,23 +665,12 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
         ? [...vickreyPriceCells(), fundingCell()]
         : [
             mechValueCell('per-head', cents(detail?.shareCents ?? 0), {
-              partyLabel: `× ${memberCount}`,
-              tip: 'Each roommate’s equal share of the doer’s own bid. First-best pays the doer their bid, so shares exactly cover it and the transfers sum to $0 — but the doer profits by inflating that bid.',
+              partyLabel: `× ${memberCount - 1}`,
+              tip: 'Each of the other roommates’ equal share of the doer’s own bid; the doer never pays their own price. First-best pays the doer their bid, so shares exactly cover it and the transfers sum to $0 — but the doer profits by inflating that bid.',
             }),
           ]),
-      ...roommates.map((roommate: any) => {
-        const amount = paymentOf(roommate.id);
-        const receives = amount < 0;
-        const displayAmount = receives ? -amount : amount;
-        return mechValueCell(`transfer-${roommate.id}`, cents(displayAmount), {
-          partyLabel:
-            amount === 0
-              ? roommate.name
-              : `${receives ? 'to' : 'from'} ${roommate.name}`,
-          valueClass: paymentClass(amount),
-          tip: transferTip(roommate.id),
-        });
-      }),
+      ...paymentCells('transfer', ledger.chorePaymentsCents ?? ledger.payments, choreTip),
+      ...(isFaltings ? paymentCells('incentive', ledger.incentivePaymentsCents ?? {}, incentiveTip) : []),
     ];
   }
 
@@ -773,9 +790,10 @@ export default function LedgerPage({ refreshToken, bump }: { refreshToken: numbe
                 );
               }
               // Recurring bids are editable on the live (current/upcoming) weeks
-              // only; editing appends an edit effective now, so past weeks stay
-              // read-only and are never rewritten. Unset shows blank (the
-              // economics then treat it as no WTP and a very large bid).
+              // only; editing appends an edit effective for the row's own week,
+              // so past weeks stay read-only and are never rewritten. Unset
+              // shows blank (the economics then treat it as no WTP and a very
+              // large bid).
               if (instance.week_start >= data.current_week) {
                 return (
                   <Fragment key={roommate.id}>

@@ -6,13 +6,20 @@
 // a year, so doing this live on every render is trivial.
 //
 // Every mechanism here is exactly budget-balanced: each chore's transfers sum
-// to zero, so no house account is ever needed. The performer is always financed
-// by an equal per-head split of a single price:
+// to zero, so no house account is ever needed. The performer receives the
+// entered price in full, financed by an equal split among the *other*
+// roommates -- the doer never pays a share of their own price (matching
+// flatPayout one-offs). Internally this stays the laboratory's *symmetric*
+// mechanism (everyone, doer included, pays a 1/n share): the system simply
+// prices the chore at price * n/(n-1), so the doer's own 1/n share cancels
+// against their pay and each other roommate pays price/(n-1). Every funding
+// decision and fairness computation runs on that scaled price, keeping the
+// lab's incentive audits applicable verbatim:
 //   - 'first-best': the price is the doer's own bid, paid whenever total WTP
 //     covers it. The efficiency benchmark -- not strategyproof.
 //   - 'vickrey-majority': the price is the second-lowest bid (a Vickrey
 //     procurement, so bidding your true cost is dominant); the chore happens
-//     only if a strict majority think it worth their share of that price.
+//     only if a strict majority think it worth the per-head share.
 //   - 'vickrey-faltings': the same Vickrey price, but the funding decision is
 //     delegated to a randomly drawn "jury" of everyone-but-one, and the drawn
 //     roommate's exclusion is compensated by FaltingsFair side-payments that
@@ -115,7 +122,10 @@ export interface MechanismDetail {
   priceCents: number;
   // Whose bid set the price (null under 'first-best', where it's the doer's own).
   priceSetterId: number | null;
-  // The equal per-head share financing that price (display-rounded).
+  // The equal per-head share financing that price: the 1/n share of the
+  // n/(n-1)-scaled system price, i.e. price/(n-1), which is both what each
+  // non-doer pays and the WTP threshold the funding decisions test against
+  // (display-rounded).
   shareCents: number;
   // 'vickrey-majority': how many members' WTP covers the share, and the
   // strict-majority threshold that decides funding.
@@ -139,6 +149,11 @@ export interface Ledger {
   skipReason?: string;
   // roommate_id -> cents; positive pays, negative receives.
   payments: Record<number, number>;
+  // 'vickrey-faltings' only: `payments` split into the money that actually
+  // finances the chore and the zero-sum fairness incentives from the jury
+  // draw. Each part is exactly balanced and payments is their sum.
+  chorePaymentsCents?: Record<number, number>;
+  incentivePaymentsCents?: Record<number, number>;
   detail?: MechanismDetail;
 }
 
@@ -151,11 +166,11 @@ function balancedRound(values: Record<number, number>): Record<number, number> {
   const out: Record<number, number> = {};
   let running = 0;
   for (let i = 0; i < ids.length - 1; i += 1) {
-    const v = Math.round(values[ids[i]]);
+    const v = Math.round(values[ids[i]]) || 0; // normalize -0
     out[ids[i]] = v;
     running += v;
   }
-  if (ids.length) out[ids[ids.length - 1]] = -running;
+  if (ids.length) out[ids[ids.length - 1]] = -running || 0;
   return out;
 }
 
@@ -186,20 +201,23 @@ function priceSetter(people: Person[], prefs: Record<number, Pref>, assigneeId: 
   return setter?.id ?? null;
 }
 
-// Everyone (doer included) pays an equal share of the price; the doer receives
-// the price. Sums to zero before rounding; balancedRound keeps it exact.
+// The other roommates split the price equally; the doer receives it in full
+// and never finances their own pay. Sums to zero before rounding;
+// balancedRound keeps it exact.
 function equalSplitPayments(people: Person[], assigneeId: number, price: number): Record<number, number> {
-  const share = price / people.length;
+  const share = price / (people.length - 1);
   const raw: Record<number, number> = {};
-  for (const p of people) raw[p.id] = share - (p.id === assigneeId ? price : 0);
+  for (const p of people) raw[p.id] = p.id === assigneeId ? -price : share;
   return balancedRound(raw);
 }
 
-// FaltingsFair side-payments and the realized jury draw. Each member's
-// fairness transfer is their expected VCG pivot charge across the draws that
-// include them, minus 1/n of the charges levied when they are the excluded
-// one -- the rebate depends only on the *others'* reports and the charges are
-// standard pivot terms, so truthful reporting stays optimal in expectation.
+// FaltingsFair side-payments and the realized jury draw, on the symmetric
+// 1/n-share economics of `price` (callers pass the n/(n-1)-scaled system
+// price, mirroring the laboratory exactly). Each member's fairness transfer
+// is their expected VCG pivot charge across the draws that include them,
+// minus 1/n of the charges levied when they are the excluded one -- the
+// rebate depends only on the *others'* reports and the charges are standard
+// pivot terms, so truthful reporting stays optimal in expectation.
 // The transfers sum to zero, so exact budget balance survives any realized
 // draw. `fairTransfers` comes back scaled by n/k (k = funding juries): the app
 // only settles funded chores, and scaling keeps each member's expected
@@ -308,7 +326,14 @@ export function computeLedger(
   const forced = forcedAssigneeId != null && forceWorthDoing;
 
   const price = mechanism === 'first-best' ? winningBid : vickreyPrice(people, prefs, assignee.id);
-  const share = price / n;
+  // The doer nets `price` in full. To stay exactly the lab's symmetric
+  // mechanism (everyone, doer included, pays a 1/n share), the system prices
+  // the chore at price * n/(n-1): the doer's 1/n share of the scaled price
+  // cancels against their pay, leaving each other roommate paying
+  // price/(n-1). All funding decisions and fairness math use the scaled
+  // price, so the lab's incentive audits apply verbatim.
+  const systemPrice = (price * n) / (n - 1);
+  const share = systemPrice / n;
   const detail: MechanismDetail = {
     priceCents: price,
     priceSetterId: mechanism === 'first-best' ? null : priceSetter(people, prefs, assignee.id, price),
@@ -327,7 +352,7 @@ export function computeLedger(
       skipReason = `only ${detail.supporters} of ${n} accept the per-head share (need ${detail.required})`;
     }
   } else if (mechanism === 'vickrey-faltings') {
-    const draw = faltingsDraw(people, prefs, price, drawKey);
+    const draw = faltingsDraw(people, prefs, systemPrice, drawKey);
     detail.excludedId = draw.excludedId;
     detail.juryFunds = draw.juryFunds;
     detail.fundingJuries = draw.fundingJuries;
@@ -344,17 +369,26 @@ export function computeLedger(
     return { assigneeId: null, surplusCents: surplus, worthDoing: false, skipReason, payments: {}, detail };
   }
 
-  let payments: Record<number, number>;
-  if (fairTransfers) {
-    const raw: Record<number, number> = {};
-    for (const p of people) {
-      raw[p.id] = share - (p.id === assignee.id ? price : 0) - (fairTransfers[p.id] ?? 0);
-    }
-    payments = balancedRound(raw);
-  } else {
-    payments = equalSplitPayments(people, assignee.id, price);
+  // Settle the chore financing and the fairness incentives as two separately
+  // balanced parts so the UI can show them apart; `payments` is their sum.
+  const chorePayments = equalSplitPayments(people, assignee.id, price);
+  if (!fairTransfers) {
+    return { assigneeId: assignee.id, surplusCents: surplus, worthDoing: true, payments: chorePayments, detail };
   }
-  return { assigneeId: assignee.id, surplusCents: surplus, worthDoing: true, payments, detail };
+  const rawIncentives: Record<number, number> = {};
+  for (const p of people) rawIncentives[p.id] = -(fairTransfers[p.id] ?? 0);
+  const incentivePayments = balancedRound(rawIncentives);
+  const payments: Record<number, number> = {};
+  for (const p of people) payments[p.id] = (chorePayments[p.id] ?? 0) + (incentivePayments[p.id] ?? 0);
+  return {
+    assigneeId: assignee.id,
+    surplusCents: surplus,
+    worthDoing: true,
+    payments,
+    chorePaymentsCents: chorePayments,
+    incentivePaymentsCents: incentivePayments,
+    detail,
+  };
 }
 
 // ---- Per-instance ledger + display status ------------------------------------
@@ -450,14 +484,12 @@ export interface RecordedPayment {
 export interface Balances {
   nets: Net[];
   settlements: Settlement[];
-  // Always 0 under the exact-BB mechanisms; kept as a conservation check.
-  houseCents: number;
 }
 
 // Only 'done' instances pay out. Nets are summed per roommate (membership is
 // handled inside ledgerForInstance); recorded settle-up payments then move money
-// between roommates without touching the house. Every mechanism is exactly
-// budget-balanced, so the house residual is always zero.
+// between roommates. Every mechanism is exactly budget-balanced, so money only
+// ever moves between roommates -- there is no house account.
 export function computeBalances(
   instances: RawInstance[],
   people: Person[],
@@ -469,7 +501,6 @@ export function computeBalances(
 ): Balances {
   const net: Record<number, number> = {};
   for (const p of people) net[p.id] = 0;
-  let roommateTotal = 0;
 
   for (const instance of instances) {
     if (instance.status !== 'done') continue;
@@ -483,12 +514,11 @@ export function computeBalances(
     );
     for (const [id, amount] of Object.entries(payments)) {
       if (Number(id) in net) net[Number(id)] += amount;
-      roommateTotal += amount;
     }
   }
 
   // A recorded payment of A -> B settles A's debt: A's net falls, B's rises.
-  // It nets to zero across the two, so the house is unaffected.
+  // It nets to zero across the two.
   for (const pay of recordedPayments) {
     if (pay.from_roommate_id in net) net[pay.from_roommate_id] -= pay.amount_cents;
     if (pay.to_roommate_id in net) net[pay.to_roommate_id] += pay.amount_cents;
@@ -498,8 +528,7 @@ export function computeBalances(
     .map((p) => ({ id: p.id, name: p.name, net_cents: net[p.id] ?? 0 }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const houseCents = -roommateTotal || 0;
-  return { nets, settlements: settle(nets), houseCents };
+  return { nets, settlements: settle(nets) };
 }
 
 // Greedy debtor/creditor matching, same as the old backend settle_balances.

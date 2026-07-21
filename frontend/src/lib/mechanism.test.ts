@@ -43,14 +43,24 @@ describe('assignment', () => {
   });
 });
 
-describe('first-best (equal split of the doer\'s own bid)', () => {
-  it('pays the doer their bid, financed by an equal per-head split', () => {
+describe('first-best (the doer\'s own bid, split among the others)', () => {
+  it('pays the doer their full bid, financed by the other roommates', () => {
     const led = computeLedger(people, richPrefs, 'first-best');
-    // Share = 700/3; the doer nets 700 - share. balancedRound keeps the sum exact.
-    expect(led.payments).toEqual({ 1: 233, 2: -467, 3: 234 });
+    // The doer is exempt from their own price: the others each pay 700/2 and
+    // the doer nets the full 700. balancedRound keeps the sum exact.
+    expect(led.payments).toEqual({ 1: 350, 2: -700, 3: 350 });
     expect(paymentSum(led.payments)).toBe(0);
     expect(led.detail?.priceCents).toBe(700);
     expect(led.detail?.priceSetterId).toBeNull(); // first price: the doer's own bid
+  });
+
+  it('never charges the doer a share of their own price ($10 bid, 5 roommates -> $10)', () => {
+    const five: Person[] = [1, 2, 3, 4, 5].map((id) => ({ id, name: `P${id}` }));
+    const prefs = { 1: P(500, 1000), 2: P(500, 2000), 3: P(500, 2000), 4: P(500, 2000), 5: P(500, 2000) };
+    const led = computeLedger(five, prefs, 'first-best');
+    expect(led.assigneeId).toBe(1);
+    expect(-led.payments[1]).toBe(1000); // the full $10, not $8
+    expect(paymentSum(led.payments)).toBe(0);
   });
 
   it('skips when total WTP is below the lowest bid', () => {
@@ -64,18 +74,26 @@ describe('first-best (equal split of the doer\'s own bid)', () => {
 });
 
 describe('vickrey-majority (second price + strict-majority funding)', () => {
-  it('pays the doer the second-lowest bid, split equally, when a majority accepts the share', () => {
+  it('pays the doer the full second-lowest bid, split among the others, when a majority accepts', () => {
     const led = computeLedger(people, richPrefs, 'vickrey-majority');
     expect(led.assigneeId).toBe(2);
-    // Price = 900 (Alex's bid), share = 300, everyone's WTP covers it.
-    expect(led.payments).toEqual({ 1: 300, 2: -600, 3: 300 });
+    // Price = 900 (Alex's bid). The system prices the chore at 900 * 3/2, so
+    // the per-head share is 450: the vote tests WTP against it (everyone
+    // covers it), the two non-doers pay it, and the doer nets the full 900.
+    expect(led.payments).toEqual({ 1: 450, 2: -900, 3: 450 });
     expect(paymentSum(led.payments)).toBe(0);
-    expect(led.detail).toMatchObject({ priceCents: 900, priceSetterId: 1, shareCents: 300, supporters: 3, required: 2 });
+    expect(led.detail).toMatchObject({
+      priceCents: 900,
+      priceSetterId: 1,
+      shareCents: 450,
+      supporters: 3,
+      required: 2,
+    });
   });
 
   it('skips when no strict majority accepts the per-head share, even at positive surplus', () => {
     // Surplus is 350 - 700 < 0 here anyway, but the binding reason is the vote:
-    // share = 300 and nobody's WTP reaches it.
+    // share = 450 and nobody's WTP reaches it.
     const led = computeLedger(people, { 1: P(100, 900), 2: P(50, 700), 3: P(200, 1100) }, 'vickrey-majority');
     expect(led.worthDoing).toBe(false);
     expect(led.payments).toEqual({});
@@ -84,60 +102,74 @@ describe('vickrey-majority (second price + strict-majority funding)', () => {
   });
 
   it('funds a negative-surplus chore when a majority accepts the share', () => {
-    // Total WTP 620 < bid 700, but two of three accept the 300 share.
-    const led = computeLedger(people, { 1: P(310, 900), 2: P(310, 700), 3: P(0, 1100) }, 'vickrey-majority');
+    // With 3 people a majority covering the price/(n-1) share implies positive
+    // surplus, so this takes 5: price = 800, share = 200, three of five accept
+    // it while total WTP 630 < the doer's 700 bid.
+    const five: Person[] = [1, 2, 3, 4, 5].map((id) => ({ id, name: `P${id}` }));
+    const prefs = { 1: P(210, 700), 2: P(210, 800), 3: P(210, 1100), 4: P(0, 1100), 5: P(0, 1100) };
+    const led = computeLedger(five, prefs, 'vickrey-majority');
     expect(led.surplusCents).toBeLessThan(0);
+    expect(led.detail).toMatchObject({ priceCents: 800, shareCents: 200, supporters: 3, required: 3 });
     expect(led.worthDoing).toBe(true);
-    expect(led.payments).toEqual({ 1: 300, 2: -600, 3: 300 });
+    expect(led.payments).toEqual({ 1: -800, 2: 200, 3: 200, 4: 200, 5: 200 });
   });
 
   it('forced assignee overrides a failed vote', () => {
     const led = computeLedger([people[0], people[1]], { 1: P(100, 900), 2: P(50, 700) }, 'vickrey-majority', 1);
     expect(led.worthDoing).toBe(true);
     expect(led.assigneeId).toBe(1);
-    // Price = the other roommate's bid (700), split two ways.
-    expect(led.payments).toEqual({ 1: -350, 2: 350 });
+    // Price = the other roommate's bid (700), paid entirely by them.
+    expect(led.payments).toEqual({ 1: -700, 2: 700 });
   });
 });
 
 describe('vickrey-faltings (second price + jury draw + fairness side-payments)', () => {
-  // netValues (wtp - 300 share): Alex -200, Blair +400, Casey 0. The jury's
-  // verdict depends on who is excluded, and Blair/Casey carry nonzero
-  // fairness side-payments (computed only from the others' reports).
+  // Price = 900, system price = 1350, share = 450. netValues (wtp - 450):
+  // Alex -350, Blair +250, Casey -150. Only the jury excluding Alex funds
+  // (k = 1), and everyone carries nonzero fairness side-payments (computed
+  // only from the others' reports).
   const pivotalPrefs = { 1: P(100, 500), 2: P(700, 900), 3: P(300, 1000) };
 
-  it('reduces to the plain equal split when every jury agrees and no one is pivotal', () => {
+  it('reduces to the plain price split when every jury agrees and no one is pivotal', () => {
     for (const drawKey of [0, 1, 2]) {
       const led = computeLedger(people, richPrefs, 'vickrey-faltings', null, true, drawKey);
-      expect(led.payments).toEqual({ 1: 300, 2: -600, 3: 300 });
+      expect(led.payments).toEqual({ 1: 450, 2: -900, 3: 450 });
+      expect(led.incentivePaymentsCents).toEqual({ 1: 0, 2: 0, 3: 0 });
     }
   });
 
-  it('funds and folds the p-scaled fairness adjustments into the transfers', () => {
+  it('funds, reporting the chore money and the scaled fairness incentives separately', () => {
     const led = computeLedger(people, pivotalPrefs, 'vickrey-faltings', null, true, 0);
     expect(led.assigneeId).toBe(1); // Alex bids 500
-    expect(led.detail).toMatchObject({ priceCents: 900, excludedId: 1, juryFunds: true, fundingJuries: 2 });
-    // Blair's expected pivot charge is 200/3, scaled by n/k = 3/2 to the 100
-    // she pays per funded draw; Casey receives it as a rebate.
-    expect(led.payments).toEqual({ 1: -600, 2: 400, 3: 200 });
+    expect(led.detail).toMatchObject({ priceCents: 900, excludedId: 1, juryFunds: true, fundingJuries: 1 });
+    // Chore money: Blair and Casey finance Alex's 900 at 450 each. Incentives
+    // (expected pivot charges minus rebates, scaled by n/k = 3/1): Alex pays
+    // 100, Blair pays 150, Casey receives 250.
+    expect(led.chorePaymentsCents).toEqual({ 1: -900, 2: 450, 3: 450 });
+    expect(led.incentivePaymentsCents).toEqual({ 1: 100, 2: 150, 3: -250 });
+    // The net transfer is the sum of the two parts, each exactly balanced.
+    expect(led.payments).toEqual({ 1: -800, 2: 600, 3: 200 });
+    expect(paymentSum(led.chorePaymentsCents!)).toBe(0);
+    expect(paymentSum(led.incentivePaymentsCents!)).toBe(0);
     expect(paymentSum(led.payments)).toBe(0);
   });
 
   it('scaling keeps expected payments equal to the unconditional mechanism', () => {
-    // Across the three equiprobable draws, two fund with payments
-    // {-600, 400, 200} and one declines with none. The totals match 3x the
-    // expected payments of the mechanism that pays fairness in every branch
-    // (2 funded splits + unscaled fairness of -0/+66.67/-66.67 in all three).
+    // Across the three equiprobable draws, only the jury excluding Alex funds
+    // (payments {-800, 600, 200}); the other two decline with none. The totals
+    // match 3x the expected payments of the mechanism that pays fairness in
+    // every branch (1 funded split {-900, 450, 450} + unscaled fairness
+    // payments of {+33.33, +50, -83.33} in all three draws).
     const totals: Record<number, number> = { 1: 0, 2: 0, 3: 0 };
     for (const drawKey of [0, 1, 2]) {
       const led = computeLedger(people, pivotalPrefs, 'vickrey-faltings', null, true, drawKey);
       for (const [id, amount] of Object.entries(led.payments)) totals[Number(id)] += amount;
     }
-    expect(totals).toEqual({ 1: -1200, 2: 800, 3: 400 });
+    expect(totals).toEqual({ 1: -800, 2: 600, 3: 200 });
   });
 
   it('skips when the drawn jury values the chore below its price', () => {
-    // Excluding Blair (the fan) leaves a jury with net value -200.
+    // Excluding Blair (the fan) leaves a jury with net value -500.
     const led = computeLedger(people, pivotalPrefs, 'vickrey-faltings', null, true, 1);
     expect(led.detail?.excludedId).toBe(2);
     expect(led.worthDoing).toBe(false);
@@ -170,7 +202,7 @@ describe('one-offs', () => {
     const instance: RawInstance = { id: 9, recurring_chore_id: null, assignee_id: 2, status: 'pending', payout_cents: 1200 };
     const led = ledgerForInstance(instance, people, {}, 'vickrey-majority', { 9: richPrefs });
     expect(led.assigneeId).toBe(2);
-    expect(led.payments).toEqual({ 1: 300, 2: -600, 3: 300 });
+    expect(led.payments).toEqual({ 1: 450, 2: -900, 3: 450 });
     expect(paymentSum(led.payments)).toBe(0);
   });
 
@@ -230,10 +262,9 @@ describe('balances', () => {
   const pendingRecurring: RawInstance = { ...doneRecurring, id: 2, status: 'pending' };
 
   it.each(['first-best', 'vickrey-majority', 'vickrey-faltings'] as const)(
-    'nets to zero with a flat house and only counts done (%s)',
+    'nets to zero across roommates and only counts done (%s)',
     (mechanism) => {
       const b = computeBalances([doneRecurring, pendingRecurring], people, prefsByChore, mechanism);
-      expect(b.houseCents).toBe(0);
       expect(b.nets.reduce((s, n) => s + n.net_cents, 0)).toBe(0);
     },
   );
@@ -327,12 +358,12 @@ describe('recorded payments', () => {
     { id: 2, name: 'Blair' },
   ];
 
-  it('moves net from payer to recipient without touching the house', () => {
+  it('moves net from payer to recipient, netting to zero', () => {
     const b = computeBalances([], roster, {}, 'first-best', {}, [
       { from_roommate_id: 1, to_roommate_id: 2, amount_cents: 500 },
     ]);
     expect(b.nets.find((n) => n.id === 1)?.net_cents).toBe(-500);
     expect(b.nets.find((n) => n.id === 2)?.net_cents).toBe(500);
-    expect(b.houseCents).toBe(0);
+    expect(b.nets.reduce((s, n) => s + n.net_cents, 0)).toBe(0);
   });
 });
