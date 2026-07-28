@@ -23,6 +23,8 @@ from .profiling import TIMER, timed
 from .sequential import (
     EqualSplitVickreyFaltingsFair,
     EqualShareMajoritySequential,
+    GuoAsymptoticSequential,
+    GuoFiniteNSequential,
     RawBidDemandSequential,
 )
 from .solver import default_threads
@@ -122,10 +124,16 @@ def main() -> None:
     # entry. Each mechanism owns its deployment report interface: raw-bid and
     # formula mechanisms consume continuous types directly, tabular ones
     # quantize at the door via QuantizedReports.
+    guo_mechanisms = (
+        [GuoAsymptoticSequential(), GuoFiniteNSequential()]
+        if domain.n >= 3
+        else []
+    )
     mechanisms = [
         EqualSplitFirstBest(),
         EqualShareMajoritySequential(),
         EqualSplitVickreyFaltingsFair(),
+        *guo_mechanisms,
         raw_demand_coarse,
         raw_demand_fine,
         QuantizedReports(lp_solution.mechanism, args.values, args.costs),
@@ -267,8 +275,10 @@ def main() -> None:
     print("\nExhaustive-grid summary")
     for summary in exhaustive_summaries:
         print(
-            f"{summary.mechanism:38s} ratio={summary.welfare_ratio:7.3f} "
-            f"avg_regret={summary.average_regret:8.3f} worst={summary.worst_case_regret:8.3f}"
+            f"{summary.mechanism:46s} "
+            f"gross_ratio={summary.welfare_ratio:7.3f} "
+            f"household_ratio={summary.household_welfare_ratio:7.3f} "
+            f"household_worst={summary.worst_case_household_regret:8.3f}"
         )
     print(f"\noutputs: {output.resolve()}")
 

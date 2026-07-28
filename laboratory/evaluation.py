@@ -16,6 +16,8 @@ DISPLAY_NAMES = {
     "equal_split_first_best": "EqualSplit + FirstBest",
     "equal_split_vickrey_majority": "EqualSplit + Vickrey + Majority",
     "equal_split_vickrey_faltings_fair": "EqualSplit + Vickrey + FaltingsFair",
+    "equal_split_vickrey_guo_2019_asymptotic": "Vickrey + Guo 2019 (asymptotic)",
+    "equal_split_vickrey_guo_2019_finite_n": "Vickrey + Guo 2019 (finite n)",
     "lp_demand_vickrey": "LP Demand + Vickrey",
     "lp_demand_vickrey_coarse": "LP Demand + Vickrey (coarse WTP)",
     "lp_demand_vickrey_fine": "LP Demand + Vickrey (fine WTP)",
@@ -36,10 +38,14 @@ class WelfareSummary:
     mechanism: str
     profiles: int
     average_welfare: float
+    average_household_welfare: float
     average_first_best: float
     welfare_ratio: float
+    household_welfare_ratio: float
     worst_case_regret: float
+    worst_case_household_regret: float
     average_regret: float
+    average_household_regret: float
     average_abs_budget_imbalance: float
 
 
@@ -70,6 +76,12 @@ def profile_results(
         for mechanism in mechanisms:
             result = mechanism.run(report_profile)
             achieved = result.expected_welfare(true_profile)
+            budget_imbalance = sum(result.expected_transfers())
+            # A negative balance is money retained outside the household. It
+            # cancels for the exactly balanced mechanisms, but must be counted
+            # to evaluate weakly balanced redistribution mechanisms such as
+            # Guo (2019) on total roommate utility.
+            household_welfare = achieved + budget_imbalance
             rows.append(
                 {
                     "profile_id": profile_id,
@@ -77,9 +89,11 @@ def profile_results(
                     "first_best_welfare": first_best,
                     "reported_first_best_welfare": reported_first_best,
                     "welfare": achieved,
+                    "household_welfare": household_welfare,
                     "regret": first_best - achieved,
+                    "household_regret": first_best - household_welfare,
                     "rounding_regret": first_best - reported_first_best,
-                    "budget_imbalance": sum(result.expected_transfers()),
+                    "budget_imbalance": budget_imbalance,
                 }
             )
     return rows
@@ -91,17 +105,25 @@ def summarize(rows: Sequence[dict[str, float | int | str]]) -> list[WelfareSumma
     for name in names:
         selected = [row for row in rows if row["mechanism"] == name]
         achieved = mean(float(row["welfare"]) for row in selected)
+        household = mean(float(row["household_welfare"]) for row in selected)
         benchmark = mean(float(row["first_best_welfare"]) for row in selected)
         regrets = [float(row["regret"]) for row in selected]
+        household_regrets = [float(row["household_regret"]) for row in selected]
         summaries.append(
             WelfareSummary(
                 mechanism=name,
                 profiles=len(selected),
                 average_welfare=achieved,
+                average_household_welfare=household,
                 average_first_best=benchmark,
                 welfare_ratio=achieved / benchmark if benchmark else 1.0,
+                household_welfare_ratio=(
+                    household / benchmark if benchmark else 1.0
+                ),
                 worst_case_regret=max(regrets),
+                worst_case_household_regret=max(household_regrets),
                 average_regret=mean(regrets),
+                average_household_regret=mean(household_regrets),
                 average_abs_budget_imbalance=mean(
                     abs(float(row["budget_imbalance"])) for row in selected
                 ),
@@ -139,7 +161,9 @@ def plot_regret_cdf(
     fig, ax = plt.subplots(figsize=(12, 6))
     for name in names:
         regrets = sorted(
-            float(row["regret"]) for row in rows if row["mechanism"] == name
+            float(row["household_regret"])
+            for row in rows
+            if row["mechanism"] == name
         )
         y = [(i + 1) / len(regrets) for i in range(len(regrets))]
         ax.step(
@@ -174,12 +198,12 @@ def plot_comparison(
     output_dir.mkdir(parents=True, exist_ok=True)
     summaries = summarize(exhaustive_rows)
     names = [summary.mechanism for summary in summaries]
-    ratios = [summary.welfare_ratio for summary in summaries]
+    ratios = [summary.household_welfare_ratio for summary in summaries]
     colors = ["#7f8c8d" if "vcg" in name or "first" in name else "#2878b5" for name in names]
 
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.barh([display_name(name) for name in names], ratios, color=colors)
-    ax.set_xlabel("Average welfare / first-best welfare")
+    ax.set_xlabel("Average household welfare / first-best welfare")
     ax.set_xlim(left=min(0.0, min(ratios) - 0.05), right=max(1.02, max(ratios) + 0.05))
     ax.set_title("Exhaustive-grid welfare efficiency")
     ax.grid(axis="x", alpha=0.25)
@@ -195,16 +219,18 @@ def plot_comparison(
 
     synthetic_names = list(dict.fromkeys(str(row["mechanism"]) for row in synthetic_rows))
     synthetic_summaries = summarize(synthetic_rows)
-    synthetic_ratios = [summary.welfare_ratio for summary in synthetic_summaries]
+    synthetic_ratios = [
+        summary.household_welfare_ratio for summary in synthetic_summaries
+    ]
 
     fig, ax = plt.subplots(figsize=(12, 6))
     positions = list(range(len(synthetic_names)))
     ax.barh(positions, synthetic_ratios, color="#5b8ff9")
     ax.set_yticks(positions, labels=[display_name(name) for name in synthetic_names])
-    lower = max(0.0, min(synthetic_ratios) - 0.01)
+    lower = min(0.0, min(synthetic_ratios) - 0.01)
     upper = max(1.001, max(synthetic_ratios) + 0.001)
     ax.set_xlim(lower, upper)
-    ax.set_xlabel("Average raw welfare / continuous first-best welfare")
+    ax.set_xlabel("Average household welfare / continuous first-best welfare")
     ax.set_title("Synthetic efficiency, including report-grid rounding")
     ax.grid(axis="x", alpha=0.25)
     for position, ratio in enumerate(synthetic_ratios):
@@ -248,7 +274,11 @@ def plot_comparison(
         plt.close(fig)
 
     data = [
-        [float(row["regret"]) for row in synthetic_rows if row["mechanism"] == name]
+        [
+            float(row["household_regret"])
+            for row in synthetic_rows
+            if row["mechanism"] == name
+        ]
         for name in synthetic_names
     ]
     average_regret = [mean(regrets) for regrets in data]

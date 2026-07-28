@@ -5,7 +5,9 @@ from __future__ import annotations
 import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
+from itertools import combinations
 from math import ceil
+from typing import Literal
 
 from .domain import ChoreDomain, Outcome, Profile, nearest_level
 from .demand_lp import DemandLottery, DemandLPSolution, solve_unrestricted_demand_lp
@@ -105,6 +107,144 @@ class EqualSplitVickreyFaltingsFair:
             probabilities=probabilities,
             transfer_mass={outcome: tuple(values) for outcome, values in masses.items()},
         )
+
+
+GuoVariant = Literal["asymptotic", "finite_n"]
+
+
+def _guo_h3_extended(a: float, b: float, threshold: float) -> float:
+    """Dollar-scaled h3** from Guo (2019), Section 5.
+
+    ``threshold`` is the paper's ``t``. Keeping this expression in dollars
+    avoids dividing by a zero Vickrey price and makes the homogeneity of the
+    normalized public-project formula explicit.
+    """
+
+    capped_a = min(a, threshold)
+    capped_b = min(b, threshold)
+    return (
+        a
+        - capped_a
+        + b
+        - capped_b
+        + max(capped_a + capped_b, 2 * threshold / 3)
+        + max(capped_a + capped_b, threshold) / 2
+        - max(capped_a, capped_b, 2 * threshold / 3) / 2
+        - threshold / 6
+    )
+
+
+def _guo_f(
+    a: float,
+    b: float,
+    z: float,
+    price: float,
+    variant: GuoVariant,
+) -> float:
+    """Dollar-scaled dimension-reduced ``f(a, b, z)`` from the paper."""
+
+    if z >= price:
+        return (a + b) / 2 + z / 3
+
+    threshold = price - z
+    if variant == "finite_n":
+        # Theorem 3: no bounded-precision assumption; ratio (n+1)/(2n).
+        return z / 3 + _guo_h3_extended(a, b, threshold) / 2
+
+    # Theorem 1 / Equation (6). C appears only in the theorem's performance
+    # guarantee; neither this formula nor its implementation requires C.
+    joint = max(a + b, threshold)
+    return (
+        z / 3
+        + joint / 3
+        + (joint - max(b, threshold)) / 6 * (a > 0)
+        + (joint - max(a, threshold)) / 6 * (b > 0)
+        + threshold / 3 * (a > 0 and b > 0)
+    )
+
+
+def guo_redistribution_h(
+    values: tuple[float, ...],
+    price: float,
+    variant: GuoVariant,
+) -> tuple[float, ...]:
+    """Return the anonymous Groves ``h(theta_-i)`` values in dollars.
+
+    This is Equation (3)'s average over every ordered draw of three distinct
+    agents. ``f`` is symmetric in its first two arguments, so summing each
+    unordered pair once and doubling it gives the O(n^3) implementation.
+    """
+
+    n = len(values)
+    if n < 3:
+        raise ValueError("Guo's three-agent dimension reduction requires n >= 3")
+    if price < 0 or any(value < 0 for value in values):
+        raise ValueError("values and the public-project price must be nonnegative")
+
+    total = sum(values)
+    scale = 6 / (n * (n - 2))
+    h_values = []
+    for i in range(n):
+        others = (j for j in range(n) if j != i)
+        f_sum = 0.0
+        for j, k in combinations(others, 2):
+            # max removes only floating-point cancellation below zero; all
+            # primitive values are nonnegative.
+            z = max(0.0, total - values[i] - values[j] - values[k])
+            f_sum += _guo_f(values[j], values[k], z, price, variant)
+        h_values.append(scale * f_sum)
+    return tuple(h_values)
+
+
+class GuoPublicProjectSequential:
+    """Reverse Vickrey procurement plus Guo's 2019 public-project rule.
+
+    The second-lowest cost bid supplies the project price that the paper
+    normalizes to one. The demand rule builds efficiently at that fixed price.
+    Its Groves transfers are weakly budget balanced: unlike FaltingsFair, it
+    can retain a surplus, but it never requires a subsidy.
+    """
+
+    variant: GuoVariant
+    name: str
+
+    def run(self, reports: Profile) -> Lottery:
+        n = len(reports)
+        performer, _, price = procurement(reports)
+        values = tuple(report.value for report in reports)
+        h_values = guo_redistribution_h(values, price, self.variant)
+        funds = sum(values) >= price - 1e-12
+
+        if funds:
+            # In the paper, not building preserves each agent's price/n
+            # endowment. Subtract that constant endowment to express transfers
+            # in the laboratory's zero-at-no-chore convention, then pay the
+            # reverse-auction winner the Vickrey price.
+            transfers = [
+                sum(values) - values[i] - h_values[i] - price / n
+                for i in range(n)
+            ]
+            transfers[performer] += price
+            return deterministic_lottery(performer, tuple(transfers))
+
+        transfers = tuple(
+            price * (n - 1) / n - h_values[i] for i in range(n)
+        )
+        return deterministic_lottery(None, transfers)
+
+
+class GuoAsymptoticSequential(GuoPublicProjectSequential):
+    """The asymptotically optimal mechanism from Guo (2019), Theorem 1."""
+
+    name = "equal_split_vickrey_guo_2019_asymptotic"
+    variant: GuoVariant = "asymptotic"
+
+
+class GuoFiniteNSequential(GuoPublicProjectSequential):
+    """Guo (2019), Theorem 3, which needs no precision assumption."""
+
+    name = "equal_split_vickrey_guo_2019_finite_n"
+    variant: GuoVariant = "finite_n"
 
 
 def _single_threaded_solver() -> None:

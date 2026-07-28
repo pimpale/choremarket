@@ -46,4 +46,6 @@ def test_synthetic_welfare_can_be_scored_on_raw_types_after_rounding():
     assert row["first_best_welfare"] == 13
     assert row["reported_first_best_welfare"] == 0
     assert row["welfare"] == 0
+    assert row["household_welfare"] == 0
+    assert row["household_regret"] == 13
     assert row["rounding_regret"] == 13

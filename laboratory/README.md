@@ -17,6 +17,11 @@ to the performer is another roommate's contribution, so an exactly balanced
 cost split cancels when utilities are summed. The effort cost still appears
 once through the performer's `v_k-c_k` gross utility.
 
+The Guo 2019 mechanisms below are only weakly budget balanced: they may retain
+money outside the household. For that reason, the result CSVs report both gross
+allocation welfare and household welfare after the retained surplus. These are
+identical for every exactly balanced mechanism.
+
 The laboratory uses positive numbers for transfers received and negative
 numbers for payments made.
 
@@ -58,7 +63,37 @@ The composition is not jointly DSIC: a selected performer can manipulate WTP
 to trigger the Vickrey rent that exists only when the chore is funded. The
 exhaustive audit reports both WTP-only and cost-only deviations.
 
-### 4. LP Demand + Vickrey
+### 4–5. Vickrey + Guo 2019 Public Project
+
+These cases implement both mechanisms in [Guo, IJCAI
+2019](https://www.ijcai.org/proceedings/2019/0045.pdf):
+
+- Theorem 1's asymptotically optimal bounded-precision construction;
+- Theorem 3's finite-`n` construction, with worst-case public-project
+  efficiency ratio `(n+1)/(2n)` and no bounded-precision assumption.
+
+The paper normalizes public-project cost to `1`. In the laboratory, reverse
+Vickrey procurement chooses the performer and its second-lowest bid `p` becomes
+that cost, just as it does for FaltingsFair. The paper's dimension-reduced
+`f(a,b,z)` and anonymous `h(theta_-i)` are evaluated directly in dollars, which
+also handles `p=0` without division. The implementation averages over all
+three-agent draws in `O(n^3)` time and therefore applies when `n >= 3`.
+
+The `C` in Theorem 1 is a bound on valuation denominators used only by its
+asymptotic guarantee; it is not project cost and is not an input to the
+mechanism. Theorem 1's stated ratio also uses the paper's normalized valuation
+bound; the formula remains well-defined outside that bound, but the cited
+guarantee does not automatically extend there. Both demand rules are efficient
+and Groves-strategyproof at a fixed price. Their composition with reverse
+Vickrey has the same selected-performer cross-stage incentive caveat as
+FaltingsFair.
+
+Unlike FaltingsFair, the paper requires only **weak** budget balance. Guo's
+transfers can leave a nonnegative retained surplus (including when the project
+is not built), but never a deficit. The experiment therefore records that
+surplus as negative `budget_imbalance` and deducts it in `household_welfare`.
+
+### 6. LP Demand + Vickrey
 
 Reverse Vickrey again chooses the performer and price. For each possible price,
 a full finite-domain demand LP jointly optimizes funding probabilities and
@@ -98,7 +133,7 @@ transfer. That funding-contingent rent is deliberately excluded from the fixed
 price demand IC problem, then included in the full chore-utility exploitability
 audit. This isolates the strategic cost created by sequential composition.
 
-### 5. LP Integrated Supply/Demand
+### 7. LP Integrated Supply/Demand
 
 The full LP jointly chooses probabilities over `{no chore, roommate 0 performs,
 ..., roommate n-1 performs}` and each roommate's expected transfer per report
@@ -233,11 +268,13 @@ Result directories contain profile-level welfare CSVs, exhaustive mechanism
 audits, synthetic bid/WTP data, LP diagnostics, and six figures. The current
 broader-grid `n=3` exhaustive results are:
 
-| Mechanism | welfare ratio | worst regret |
+| Mechanism | household welfare ratio | worst household regret |
 |---|---:|---:|
 | EqualSplit + FirstBest | 1.000 | 0.000 |
 | EqualSplit + Vickrey + Majority | 0.958 | 45.000 |
 | EqualSplit + Vickrey + FaltingsFair | 0.959 | 20.000 |
+| Vickrey + Guo 2019, asymptotic | 0.687 | 90.000 |
+| Vickrey + Guo 2019, finite `n` | 0.880 | 45.000 |
 | LP Demand + Vickrey, coarse WTP | 0.997 | 10.000 |
 | LP Demand + Vickrey, fine WTP | 0.997 | 11.250 |
 | LP Integrated Supply/Demand | 0.984 | 2.350 |
