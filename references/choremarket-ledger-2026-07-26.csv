@@ -69,9 +69,15 @@ Week,Due,Chore,Description,Type,Assignee,Transfer,Status,Done,Failed,Blaine WTP,
 2026-07-19,2026-07-25,,,one-off,,,skipped,,,,,,,,,,,,
 2026-07-26,2026-08-01,Clean downstairs bathroom,,recurring,Matthew,$12.00,pending,,,$5.00,$300.00,$10.00,$29.00,$10.00,$20.00,$10.00,$14.00,$30.00,$15.00
 2026-07-26,2026-08-01,Clean microwave + kitchen sink,Wipe down the microwave inside and out,recurring,Govind,$8.00,pending,,,$1.00,$30.00,$4.00,$19.00,$11.00,$8.00,$4.00,$12.00,$15.00,$10.00
-2026-07-26,2026-08-01,Clean table and kitchen surfaces,Clear surfaces and wipe down,recurring,Govind,$9.60,pending,,,$5.00,$50.00,$3.00,$29.00,$5.00,$12.00,$10.00,$20.00,$15.00,$12.00
+2026-07-26,2026-08-01,Clean table and kitchen surfaces,Clear surfaces and wipe down,recurring,Nathan,$9.60,pending,,,$5.00,$50.00,$3.00,$29.00,$5.00,$12.00,$10.00,$20.00,$15.00,$10.00
 2026-07-26,2026-08-01,Dishes,put away dishes. Load dishwasher if dishes are accumulated on counter.,recurring,Govind,$20.00,pending,,,$8.00,$50.00,$5.00,$49.00,$50.00,$20.00,$20.00,$40.00,$35.00,$25.00
 2026-07-26,2026-08-01,Monday + Th Trash + Recycle,"Take out Monday trash, Take out Th trash + Recycle",recurring,Emerson,$16.00,pending,,,$10.00,$50.00,$30.00,$19.00,$50.00,$20.00,$4.00,$28.00,$50.00,$20.00
 2026-07-26,2026-08-01,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs,recurring,Govind,$19.20,pending,,,$4.00,$50.00,$2.00,$24.00,$13.00,$21.00,$8.00,$35.00,$30.00,$25.00
 2026-07-26,2026-08-01,clean middle floor bathroom,,recurring,Matthew,$16.00,pending,,,$5.00,$999.00,$0.00,$999.00,$10.00,$30.00,$20.00,$20.00,$10.00,$20.00
 2026-07-26,2026-08-01,clean top floor bathroom,,recurring,Emerson,$16.00,pending,,,$5.00,$999.00,$15.00,$18.55,$0.00,$30.00,$30.00,$30.00,$25.00,$20.00
+2026-08-02,2026-08-08,As dirtied Clean table and kitchen surfaces,As dirtied Clean table and kitchen surfaces,recurring,Nathan,$26.00,pending,,,$8.00,$300.00,$10.00,$40.00,,,$0.00,$45.00,$20.00,$20.00
+2026-08-02,2026-08-08,Clean microwave + kitchen sink,Wipe down the microwave inside and out,recurring,Govind,$8.00,pending,,,$1.00,$30.00,$4.00,$19.00,$11.00,$8.00,$4.00,$12.00,$15.00,$10.00
+2026-08-02,2026-08-08,Clean table and kitchen surfaces,Clear surfaces and wipe down,recurring,Nathan,$9.60,pending,,,$5.00,$50.00,$3.00,$29.00,$5.00,$12.00,$10.00,$20.00,$15.00,$10.00
+2026-08-02,2026-08-08,Dishes,put away dishes. Load dishwasher if dishes are accumulated on counter.,recurring,Govind,$20.00,pending,,,$8.00,$50.00,$5.00,$49.00,$50.00,$20.00,$20.00,$40.00,$35.00,$25.00
+2026-08-02,2026-08-08,Monday + Th Trash + Recycle,"Take out Monday trash, Take out Th trash + Recycle",recurring,Emerson,$16.00,pending,,,$10.00,$50.00,$30.00,$19.00,$50.00,$20.00,$4.00,$28.00,$50.00,$20.00
+2026-08-02,2026-08-08,Vacuum/sweep downstairs,Vacuum and sweep downstairs and the stairs and also the 2nd floor hall,recurring,Govind,$19.20,pending,,,$4.00,$50.00,$2.00,$24.00,$13.00,$21.00,$8.00,$35.00,$30.00,$25.00

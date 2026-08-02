@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -17,7 +16,7 @@ DEFAULT_MECHANISM = "first-best"
 CADENCES = {"weekly", "monthly", "ad-hoc"}
 
 # (name, description, cadence). The real chore list as our house reorganized it
-# in the latest week of the 2026-07-19 ledger export (the 2026-07-26 week).
+# in the 2026-07-26 ledger export, its latest fully-priced week.
 MOCK_RECURRING_CHORES = [
     ("Clean downstairs bathroom", "", "weekly"),
     ("Clean microwave + kitchen sink", "Wipe down the microwave inside and out", "weekly"),
@@ -943,14 +942,15 @@ def week_from_string(value: str) -> str:
 # Mock data
 #
 # The mock world is a snapshot of our house's real ledger: the chore list and
-# every roommate's actual wtp/bid exactly as they stood in the latest week of
-# the 2026-07-19 export (the 2026-07-26 week, when the chores were reorganized
-# into this set). History weeks are spawned priced by these same prefs; whether
-# each past chore got done is seeded-random.
+# every roommate's actual wtp/bid exactly as they stood in the 2026-07-26
+# week, when the chores were reorganized into this set. History weeks are
+# spawned priced by these same prefs -- including 2026-07-19, whose real
+# bids were lost to a code outage that week, so it's backfilled with the
+# 07-26 numbers too -- whether each past chore got done is seeded-random.
 # --------------------------------------------------------------------------- #
 
 # {chore_name: {roommate_name: (wtp_cents, bid_cents)}}, hand-copied from the
-# latest week of the real ledger export.
+# 2026-07-26 week of the real ledger export.
 MOCK_PREFS: dict[str, dict[str, tuple[int, int]]] = {
     "Clean downstairs bathroom": {
         "Blaine": (500, 30000),
@@ -971,7 +971,7 @@ MOCK_PREFS: dict[str, dict[str, tuple[int, int]]] = {
         "Emerson": (300, 2900),
         "Govind": (500, 1200),
         "Matthew": (1000, 2000),
-        "Nathan": (1500, 1200),
+        "Nathan": (1500, 1000),
     },
     "Dishes": {
         "Blaine": (800, 5000),
@@ -1013,26 +1013,34 @@ MOCK_PREFS: dict[str, dict[str, tuple[int, int]]] = {
 
 @dataclass
 class MockAssumptions:
-    """Knobs for regenerating the mock world. Everything is seeded, so a given
-    set of assumptions produces a deterministic world."""
+    """Knobs for regenerating the mock world."""
 
-    seed: int = 20260621
-    history_weeks: int = 8
+    # First week the app was actually used irl; there's no real history
+    # before this, so mock history starts here instead of some fixed count
+    # of weeks back.
+    history_start: str = "2026-07-19"
     nathan_join: str = "2026-06-01"
-    # Chance a past-week chore was simply left undone (-> failed status).
-    fail_rate: float = 0.08
 
 
-# One-offs lifted from the spreadsheet: (name, description, assignee, dollars,
-# weeks_ago, status). ``weeks_ago`` counts back from the most recent completed
-# week (0 = most recent past week). Verizon appears twice: a fail then a retry.
+# One-off tasks lifted straight from the real ledger, tied to the actual week
+# they appeared in: (name, description, week_start, prefs). Both were marked
+# "skipped" in the ledger (proposed, never completed) -- the closest fit in
+# our status model is "failed". Rows with no chore name (blank spreadsheet
+# rows) and one-offs from weeks before history_start aren't real data and are
+# left out.
 _MOCK_ONE_OFFS = [
-    ("Find a cleaning person", "Research and book a recurring cleaner", "Matthew", 20, 7, "done"),
-    ("Call Verizon about wifi", "Sort out the flaky wifi", "Govind", 0, 7, "failed"),
-    ("Buy and install TV on stand", "Mount the living-room TV", "Emerson", 20, 5, "done"),
-    ("Call Verizon about wifi (retry)", "Finally get the wifi fixed", "Govind", 0, 2, "done"),
-    ("Coordinate pressure washing + bush trimming", "Schedule the exterior cleanup", "Matthew", 25, 0, "done"),
-    ("Spend 15 min on the dishwasher", "Figure out why the dishwasher underperforms", "Matthew", 15, 0, "done"),
+    (
+        "fix table",
+        "",
+        "2026-07-19",
+        {"Govind": (500, 2500), "Nathan": (200, 1300)},
+    ),
+    (
+        "Fix chinesium table",
+        "",
+        "2026-07-19",
+        {},
+    ),
 ]
 
 
@@ -1042,7 +1050,6 @@ def reset_mock_data(
 ) -> None:
     today = today or date.today()
     assumptions = assumptions or MockAssumptions()
-    rng = random.Random(assumptions.seed)
     prefs = MOCK_PREFS
 
     with connect() as conn:
@@ -1092,79 +1099,36 @@ def reset_mock_data(
             )
 
     cur = current_week(today)
-    past_weeks = [
-        cur - timedelta(days=7 * k) for k in range(assumptions.history_weeks, 0, -1)
-    ]
+    history_start = date.fromisoformat(assumptions.history_start)
+    past_weeks = []
+    week = history_start
+    while week < cur:
+        past_weeks.append(week)
+        week += timedelta(days=7)
     for week in past_weeks + [cur, upcoming_week(today)]:
         spawn_week(week.isoformat())
 
-    # Past weeks are settled history: each chore was either done or (per the
-    # user's rule -- no done check on any week but the last) left failed. The
-    # current and upcoming weeks stay pending.
-    with connect() as conn:
-        for week in past_weeks:
-            rows = conn.execute(
-                """
-                SELECT id FROM chore_instances
-                WHERE week_start = ? AND recurring_chore_id IS NOT NULL
-                """,
-                (week.isoformat(),),
-            ).fetchall()
-            for row in rows:
-                status = "failed" if rng.random() < assumptions.fail_rate else "done"
-                conn.execute(
-                    "UPDATE chore_instances SET status = ? WHERE id = ?",
-                    (status, row["id"]),
-                )
-        # Guarantee at least one visible failure (mirrors the real misses).
-        if past_weeks and not conn.execute(
-            "SELECT 1 FROM chore_instances WHERE status = 'failed'"
-        ).fetchone():
+    # Past weeks are settled history: every recurring chore in them was
+    # completed. The current and upcoming weeks stay pending.
+    if past_weeks:
+        with connect() as conn:
             conn.execute(
                 """
-                UPDATE chore_instances SET status = 'failed'
-                WHERE id = (
-                    SELECT id FROM chore_instances
-                    WHERE week_start = ? AND name = 'Clean microwave + kitchen sink'
-                    LIMIT 1
-                )
+                UPDATE chore_instances SET status = 'done'
+                WHERE recurring_chore_id IS NOT NULL AND week_start < ?
                 """,
-                (past_weeks[0].isoformat(),),
+                (cur.isoformat(),),
             )
 
-    # One-off tasks from the real spreadsheet.
-    def week_for(weeks_ago: int) -> date:
-        idx = -1 - weeks_ago
-        return past_weeks[idx] if -len(past_weeks) <= idx < 0 else past_weeks[0]
-
-    for name, description, assignee, dollars, weeks_ago, status in _MOCK_ONE_OFFS:
+    # One-off tasks from the real ledger, seeded into their actual week.
+    for name, description, week_start, instance_prefs in _MOCK_ONE_OFFS:
         instance_id = add_one_off_instance(
             name=name,
             description=description,
-            week_start=week_for(weeks_ago).isoformat(),
+            week_start=week_start,
             assignee_id=None,
             payout_cents=0,
         )
-        set_manual_override(instance_id, roommate_id[assignee], dollars * 100)
-        if status != "pending":
-            set_instance_status(instance_id, status)
-
-    # Live one-offs in the current week, straight from the export: a manual
-    # override up for grabs, and a mechanism-priced one-off with partial bids.
-    bookshelf_id = add_one_off_instance(
-        name="Assemble new bookshelf",
-        description="Build the hallway bookshelf",
-        week_start=cur.isoformat(),
-        assignee_id=None,
-        payout_cents=0,
-    )
-    set_manual_override(bookshelf_id, roommate_id["Matthew"], 2500)
-    fix_table_id = add_one_off_instance(
-        name="fix table",
-        description="",
-        week_start=cur.isoformat(),
-        assignee_id=None,
-        payout_cents=0,
-    )
-    save_instance_preference(fix_table_id, roommate_id["Govind"], 500, 2500)
-    save_instance_preference(fix_table_id, roommate_id["Nathan"], 200, 1300)
+        for person, (wtp, bid) in instance_prefs.items():
+            save_instance_preference(instance_id, roommate_id[person], wtp, bid)
+        set_instance_status(instance_id, "failed")
